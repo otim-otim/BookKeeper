@@ -1,5 +1,6 @@
 {
     "name": "otim-otim/bookkeeper",
+    "version": "1.0.0",
     "description": "A Laravel package for double-entry bookkeeping and accounting statements.",
     "keywords": ["laravel", "accounting", "bookkeeping", "double-entry", "ledger"],
     "license": "MIT",
