@@ -1,8 +1,8 @@
 <?php
 
-use Otimdibossman\BookKeeper\Enums\AccountType;
-use Otimdibossman\BookKeeper\Exceptions\UnbalancedEntryException;
-use Otimdibossman\BookKeeper\Facades\BookKeeper;
+use OtimOtim\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Exceptions\UnbalancedEntryException;
+use OtimOtim\BookKeeper\Facades\BookKeeper;
 
 // ---------------------------------------------------------------------------
 // Account management

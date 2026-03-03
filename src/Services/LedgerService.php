@@ -1,13 +1,13 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Services;
+namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Support\Facades\DB;
-use Otimdibossman\BookKeeper\Exceptions\AccountNotFoundException;
-use Otimdibossman\BookKeeper\Exceptions\UnbalancedEntryException;
-use Otimdibossman\BookKeeper\Models\Account;
-use Otimdibossman\BookKeeper\Models\JournalEntry;
-use Otimdibossman\BookKeeper\Models\Transaction;
+use OtimOtim\BookKeeper\Exceptions\AccountNotFoundException;
+use OtimOtim\BookKeeper\Exceptions\UnbalancedEntryException;
+use OtimOtim\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Models\JournalEntry;
+use OtimOtim\BookKeeper\Models\Transaction;
 
 class LedgerService
 {

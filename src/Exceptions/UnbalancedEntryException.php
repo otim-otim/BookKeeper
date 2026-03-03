@@ -1,6 +1,6 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Exceptions;
+namespace OtimOtim\BookKeeper\Exceptions;
 
 use RuntimeException;
 

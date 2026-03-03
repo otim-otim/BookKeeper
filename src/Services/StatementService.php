@@ -1,9 +1,9 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Services;
+namespace OtimOtim\BookKeeper\Services;
 
-use Otimdibossman\BookKeeper\Enums\AccountType;
-use Otimdibossman\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Models\Account;
 
 class StatementService
 {

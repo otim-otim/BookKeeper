@@ -21,22 +21,22 @@
     },
     "autoload": {
         "psr-4": {
-            "Otimdibossman\\BookKeeper\\": "src/"
+            "OtimOtim\\BookKeeper\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Otimdibossman\\BookKeeper\\Tests\\": "tests/",
+            "OtimOtim\\BookKeeper\\Tests\\": "tests/",
             "Tests\\": "tests/"
         }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "Otimdibossman\\BookKeeper\\BookKeeperServiceProvider"
+                "OtimOtim\\BookKeeper\\BookKeeperServiceProvider"
             ],
             "aliases": {
-                "BookKeeper": "Otimdibossman\\BookKeeper\\Facades\\BookKeeper"
+                "BookKeeper": "OtimOtim\\BookKeeper\\Facades\\BookKeeper"
             }
         }
     },

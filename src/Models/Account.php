@@ -1,10 +1,10 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Models;
+namespace OtimOtim\BookKeeper\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Otimdibossman\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Enums\AccountType;
 
 class Account extends Model
 {

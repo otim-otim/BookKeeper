@@ -1,12 +1,12 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Facades;
+namespace OtimOtim\BookKeeper\Facades;
 
 use Illuminate\Support\Facades\Facade;
-use Otimdibossman\BookKeeper\BookKeeperManager;
-use Otimdibossman\BookKeeper\Models\Account;
-use Otimdibossman\BookKeeper\Models\JournalEntry;
-use Otimdibossman\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\BookKeeperManager;
+use OtimOtim\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Models\JournalEntry;
+use OtimOtim\BookKeeper\Enums\AccountType;
 
 /**
  * @method static Account      createAccount(string $code, string $name, AccountType $type, array $options = [])
@@ -20,7 +20,7 @@ use Otimdibossman\BookKeeper\Enums\AccountType;
  * @method static array        trialBalance(?string $asOfDate = null)
  * @method static array        generalLedger(Account $account, ?string $from = null, ?string $to = null)
  *
- * @see \Otimdibossman\BookKeeper\BookKeeperManager
+ * @see \OtimOtim\BookKeeper\BookKeeperManager
  */
 class BookKeeper extends Facade
 {

@@ -1,7 +1,7 @@
 <?php
 
-use Otimdibossman\BookKeeper\BookKeeperServiceProvider;
-use Otimdibossman\BookKeeper\Facades\BookKeeper;
+use OtimOtim\BookKeeper\BookKeeperServiceProvider;
+use OtimOtim\BookKeeper\Facades\BookKeeper;
 
 uses(
     Tests\TestCase::class,

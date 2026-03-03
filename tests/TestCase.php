@@ -3,7 +3,7 @@
 namespace Tests;
 
 use Orchestra\Testbench\TestCase as Orchestra;
-use Otimdibossman\BookKeeper\BookKeeperServiceProvider;
+use OtimOtim\BookKeeper\BookKeeperServiceProvider;
 
 class TestCase extends Orchestra
 {
@@ -15,7 +15,7 @@ class TestCase extends Orchestra
     protected function getPackageAliases($app): array
     {
         return [
-            'BookKeeper' => \Otimdibossman\BookKeeper\Facades\BookKeeper::class,
+            'BookKeeper' => \OtimOtim\BookKeeper\Facades\BookKeeper::class,
         ];
     }
 

@@ -1,13 +1,13 @@
 <?php
 
-namespace Otimdibossman\BookKeeper;
+namespace OtimOtim\BookKeeper;
 
-use Otimdibossman\BookKeeper\Services\AccountService;
-use Otimdibossman\BookKeeper\Services\LedgerService;
-use Otimdibossman\BookKeeper\Services\StatementService;
-use Otimdibossman\BookKeeper\Models\Account;
-use Otimdibossman\BookKeeper\Models\JournalEntry;
-use Otimdibossman\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Services\AccountService;
+use OtimOtim\BookKeeper\Services\LedgerService;
+use OtimOtim\BookKeeper\Services\StatementService;
+use OtimOtim\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Models\JournalEntry;
+use OtimOtim\BookKeeper\Enums\AccountType;
 
 /**
  * Main BookKeeperManager class — the class behind the BookKeeper facade.

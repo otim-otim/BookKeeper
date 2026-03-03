@@ -1,6 +1,6 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Models;
+namespace OtimOtim\BookKeeper\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;

@@ -1,12 +1,12 @@
 <?php
 
-namespace Otimdibossman\BookKeeper;
+namespace OtimOtim\BookKeeper;
 
 use Illuminate\Support\ServiceProvider;
-use Otimdibossman\BookKeeper\BookKeeperManager;
-use Otimdibossman\BookKeeper\Services\AccountService;
-use Otimdibossman\BookKeeper\Services\LedgerService;
-use Otimdibossman\BookKeeper\Services\StatementService;
+use OtimOtim\BookKeeper\BookKeeperManager;
+use OtimOtim\BookKeeper\Services\AccountService;
+use OtimOtim\BookKeeper\Services\LedgerService;
+use OtimOtim\BookKeeper\Services\StatementService;
 
 class BookKeeperServiceProvider extends ServiceProvider
 {

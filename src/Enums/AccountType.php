@@ -1,6 +1,6 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Enums;
+namespace OtimOtim\BookKeeper\Enums;
 
 enum AccountType: string
 {

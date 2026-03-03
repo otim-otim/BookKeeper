@@ -34,8 +34,8 @@ php artisan migrate
 ### Create accounts
 
 ```php
-use Otimdibossman\BookKeeper\Facades\BookKeeper;
-use Otimdibossman\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Facades\BookKeeper;
+use OtimOtim\BookKeeper\Enums\AccountType;
 
 // Chart of accounts
 BookKeeper::createAccount('1000', 'Cash',             AccountType::Asset);
@@ -126,9 +126,9 @@ $ledger  = BookKeeper::generalLedger($account, '2024-01-01', '2024-12-31');
 You can also inject the services directly:
 
 ```php
-use Otimdibossman\BookKeeper\Services\AccountService;
-use Otimdibossman\BookKeeper\Services\LedgerService;
-use Otimdibossman\BookKeeper\Services\StatementService;
+use OtimOtim\BookKeeper\Services\AccountService;
+use OtimOtim\BookKeeper\Services\LedgerService;
+use OtimOtim\BookKeeper\Services\StatementService;
 
 class MyController
 {
