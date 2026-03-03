@@ -1,179 +1,141 @@
 <?php
 
-namespace Otimdibossman\BookKeeper\Tests;
-
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Orchestra\Testbench\TestCase as Orchestra;
-use Otimdibossman\BookKeeper\BookKeeperServiceProvider;
-use Otimdibossman\BookKeeper\Facades\BookKeeper;
 use Otimdibossman\BookKeeper\Enums\AccountType;
 use Otimdibossman\BookKeeper\Exceptions\UnbalancedEntryException;
+use Otimdibossman\BookKeeper\Facades\BookKeeper;
 
-class BookKeeperTest extends Orchestra
-{
-    use RefreshDatabase;
+// ---------------------------------------------------------------------------
+// Account management
+// ---------------------------------------------------------------------------
 
-    protected function getPackageProviders($app): array
-    {
-        return [BookKeeperServiceProvider::class];
-    }
+test('can create an account', function () {
+    $account = BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
 
-    protected function getPackageAliases($app): array
-    {
-        return ['BookKeeper' => BookKeeper::class];
-    }
+    expect($account->code)->toBe('1000')
+        ->and($account->name)->toBe('Cash')
+        ->and($account->type)->toBe(AccountType::Asset);
+});
 
-    protected function defineDatabaseMigrations(): void
-    {
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
-    }
+test('can retrieve an account by code', function () {
+    BookKeeper::createAccount('2000', 'Accounts Payable', AccountType::Liability);
 
-    // ------------------------------------------------------------------
-    // Account management
-    // ------------------------------------------------------------------
+    expect(BookKeeper::account('2000')->name)->toBe('Accounts Payable');
+});
 
-    public function test_can_create_an_account(): void
-    {
-        $account = BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+test('a new account has zero balance', function () {
+    BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
 
-        $this->assertEquals('1000', $account->code);
-        $this->assertEquals('Cash', $account->name);
-        $this->assertEquals(AccountType::Asset, $account->type);
-    }
+    expect(BookKeeper::balance('1000'))->toBe(0.0);
+});
 
-    public function test_can_retrieve_account_by_code(): void
-    {
-        BookKeeper::createAccount('2000', 'Accounts Payable', AccountType::Liability);
-        $account = BookKeeper::account('2000');
+// ---------------------------------------------------------------------------
+// Journal entries
+// ---------------------------------------------------------------------------
 
-        $this->assertEquals('Accounts Payable', $account->name);
-    }
+test('can record a balanced journal entry', function () {
+    BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+    BookKeeper::createAccount('4000', 'Sales Revenue', AccountType::Revenue);
 
-    public function test_new_account_has_zero_balance(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+    $entry = BookKeeper::record([
+        ['account' => '1000', 'type' => 'debit',  'amount' => 1000.00],
+        ['account' => '4000', 'type' => 'credit', 'amount' => 1000.00],
+    ], ['memo' => 'Cash sale', 'reference' => 'INV-001']);
 
-        $this->assertEquals(0.0, BookKeeper::balance('1000'));
-    }
+    expect($entry->id)->not->toBeNull()
+        ->and($entry->isBalanced())->toBeTrue();
+});
 
-    // ------------------------------------------------------------------
-    // Ledger / journal entries
-    // ------------------------------------------------------------------
+test('an unbalanced entry throws an exception', function () {
+    BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+    BookKeeper::createAccount('4000', 'Sales Revenue', AccountType::Revenue);
 
-    public function test_can_record_balanced_journal_entry(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
-        BookKeeper::createAccount('4000', 'Sales Revenue', AccountType::Revenue);
+    BookKeeper::record([
+        ['account' => '1000', 'type' => 'debit',  'amount' => 1000.00],
+        ['account' => '4000', 'type' => 'credit', 'amount' => 500.00], // deliberately wrong
+    ]);
+})->throws(UnbalancedEntryException::class);
 
-        $entry = BookKeeper::record([
-            ['account' => '1000', 'type' => 'debit',  'amount' => 1000.00],
-            ['account' => '4000', 'type' => 'credit', 'amount' => 1000.00],
-        ], ['memo' => 'Cash sale', 'reference' => 'INV-001']);
+test('transfer convenience method creates a balanced entry', function () {
+    BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+    BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
 
-        $this->assertNotNull($entry->id);
-        $this->assertTrue($entry->isBalanced());
-    }
+    $entry = BookKeeper::transfer('1000', '3000', 5000.00);
 
-    public function test_unbalanced_entry_throws_exception(): void
-    {
-        $this->expectException(UnbalancedEntryException::class);
+    expect($entry->isBalanced())->toBeTrue()
+        ->and(BookKeeper::balance('1000'))->toBe(5000.0)
+        ->and(BookKeeper::balance('3000'))->toBe(5000.0);
+});
 
-        BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
-        BookKeeper::createAccount('4000', 'Sales Revenue', AccountType::Revenue);
+// ---------------------------------------------------------------------------
+// Account balances (normal balance direction)
+// ---------------------------------------------------------------------------
 
-        BookKeeper::record([
-            ['account' => '1000', 'type' => 'debit',  'amount' => 1000.00],
-            ['account' => '4000', 'type' => 'credit', 'amount' => 500.00], // deliberately wrong
-        ]);
-    }
+test('asset balance is debits minus credits, liability balance is credits minus debits', function () {
+    BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
+    BookKeeper::createAccount('2000', 'Accounts Payable', AccountType::Liability);
 
-    public function test_transfer_convenience_method(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
-        BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
+    // Borrow cash
+    BookKeeper::record([
+        ['account' => '1000', 'type' => 'debit',  'amount' => 3000],
+        ['account' => '2000', 'type' => 'credit', 'amount' => 3000],
+    ]);
 
-        $entry = BookKeeper::transfer('1000', '3000', 5000.00);
+    // Repay part of it
+    BookKeeper::record([
+        ['account' => '2000', 'type' => 'debit',  'amount' => 1000],
+        ['account' => '1000', 'type' => 'credit', 'amount' => 1000],
+    ]);
 
-        $this->assertTrue($entry->isBalanced());
-        $this->assertEquals(5000.0, BookKeeper::balance('1000'));
-        $this->assertEquals(5000.0, BookKeeper::balance('3000'));
-    }
+    expect(BookKeeper::balance('1000'))->toBe(2000.0) // asset:     debits - credits
+        ->and(BookKeeper::balance('2000'))->toBe(2000.0); // liability: credits - debits
+});
 
-    // ------------------------------------------------------------------
-    // Account balances
-    // ------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Financial statements
+// ---------------------------------------------------------------------------
 
-    public function test_asset_account_balance_is_debits_minus_credits(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash', AccountType::Asset);
-        BookKeeper::createAccount('2000', 'Accounts Payable', AccountType::Liability);
+test('balance sheet is in balance', function () {
+    BookKeeper::createAccount('1000', 'Cash',    AccountType::Asset);
+    BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
 
-        BookKeeper::record([
-            ['account' => '1000', 'type' => 'debit',  'amount' => 3000],
-            ['account' => '2000', 'type' => 'credit', 'amount' => 3000],
-        ]);
+    BookKeeper::transfer('1000', '3000', 10000);
 
-        BookKeeper::record([
-            ['account' => '2000', 'type' => 'debit',  'amount' => 1000],
-            ['account' => '1000', 'type' => 'credit', 'amount' => 1000],
-        ]);
+    $sheet = BookKeeper::balanceSheet();
 
-        $this->assertEquals(2000.0, BookKeeper::balance('1000')); // asset: debits - credits
-        $this->assertEquals(2000.0, BookKeeper::balance('2000')); // liability: credits - debits
-    }
+    expect($sheet['balanced'])->toBeTrue()
+        ->and($sheet['totals']['assets'])->toBe(10000.0);
+});
 
-    // ------------------------------------------------------------------
-    // Financial statements
-    // ------------------------------------------------------------------
+test('income statement calculates net income correctly', function () {
+    BookKeeper::createAccount('1000', 'Cash',     AccountType::Asset);
+    BookKeeper::createAccount('4000', 'Revenue',  AccountType::Revenue);
+    BookKeeper::createAccount('5000', 'Expenses', AccountType::Expense);
 
-    public function test_balance_sheet_is_balanced(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash',    AccountType::Asset);
-        BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
+    BookKeeper::record([
+        ['account' => '1000', 'type' => 'debit',  'amount' => 5000],
+        ['account' => '4000', 'type' => 'credit', 'amount' => 5000],
+    ]);
 
-        BookKeeper::transfer('1000', '3000', 10000);
+    BookKeeper::record([
+        ['account' => '5000', 'type' => 'debit',  'amount' => 2000],
+        ['account' => '1000', 'type' => 'credit', 'amount' => 2000],
+    ]);
 
-        $sheet = BookKeeper::balanceSheet();
+    $pl = BookKeeper::incomeStatement();
 
-        $this->assertTrue($sheet['balanced']);
-        $this->assertEquals(10000.0, $sheet['totals']['assets']);
-    }
+    expect($pl['totals']['revenue'])->toBe(5000.0)
+        ->and($pl['totals']['expenses'])->toBe(2000.0)
+        ->and($pl['totals']['net_income'])->toBe(3000.0);
+});
 
-    public function test_income_statement_calculates_net_income(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash',     AccountType::Asset);
-        BookKeeper::createAccount('4000', 'Revenue',  AccountType::Revenue);
-        BookKeeper::createAccount('5000', 'Expenses', AccountType::Expense);
+test('trial balance has equal debit and credit totals', function () {
+    BookKeeper::createAccount('1000', 'Cash',    AccountType::Asset);
+    BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
 
-        // Revenue booking
-        BookKeeper::record([
-            ['account' => '1000', 'type' => 'debit',  'amount' => 5000],
-            ['account' => '4000', 'type' => 'credit', 'amount' => 5000],
-        ]);
+    BookKeeper::transfer('1000', '3000', 7500);
 
-        // Expense booking
-        BookKeeper::record([
-            ['account' => '5000', 'type' => 'debit',  'amount' => 2000],
-            ['account' => '1000', 'type' => 'credit', 'amount' => 2000],
-        ]);
+    $trial = BookKeeper::trialBalance();
 
-        $p_and_l = BookKeeper::incomeStatement();
-
-        $this->assertEquals(5000.0, $p_and_l['totals']['revenue']);
-        $this->assertEquals(2000.0, $p_and_l['totals']['expenses']);
-        $this->assertEquals(3000.0, $p_and_l['totals']['net_income']);
-    }
-
-    public function test_trial_balance_is_balanced(): void
-    {
-        BookKeeper::createAccount('1000', 'Cash',    AccountType::Asset);
-        BookKeeper::createAccount('3000', 'Capital', AccountType::Equity);
-
-        BookKeeper::transfer('1000', '3000', 7500);
-
-        $trial = BookKeeper::trialBalance();
-
-        $this->assertTrue($trial['balanced']);
-        $this->assertEquals($trial['totals']['debits'], $trial['totals']['credits']);
-    }
-}
+    expect($trial['balanced'])->toBeTrue()
+        ->and($trial['totals']['debits'])->toBe($trial['totals']['credits']);
+});
