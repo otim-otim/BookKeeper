@@ -1,5 +1,5 @@
 {
-    "name": "otimdibossman/bookkeeper",
+    "name": "otim-otim/bookkeeper",
     "description": "A Laravel package for double-entry bookkeeping and accounting statements.",
     "keywords": ["laravel", "accounting", "bookkeeping", "double-entry", "ledger"],
     "license": "MIT",
