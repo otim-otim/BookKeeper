@@ -1,0 +1,6 @@
+.git
+vendor
+node_modules
+.phpunit.cache
+.phpunit.result.cache
+coverage

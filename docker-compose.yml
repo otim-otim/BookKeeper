@@ -1,0 +1,83 @@
+# Run the test suite:
+#   docker compose run --rm app                      # SQLite (in-memory)
+#   docker compose run --rm app-mysql                # MySQL 8.4
+#   docker compose run --rm app-pgsql                # PostgreSQL 17
+#   docker compose run --rm app composer <command>   # any composer command
+
+x-app: &app
+  build:
+    context: .
+    args:
+      PHP_VERSION: ${PHP_VERSION:-8.5}
+  image: bookkeeper-php:${PHP_VERSION:-8.5}
+  volumes:
+    - .:/app
+    - vendor:/app/vendor
+  environment: &app-env
+    DB_CONNECTION: sqlite
+    DB_DATABASE: ":memory:"
+
+services:
+  app:
+    <<: *app
+
+  app-mysql:
+    <<: *app
+    environment:
+      <<: *app-env
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: bookkeeper
+      DB_USERNAME: bookkeeper
+      DB_PASSWORD: secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+    profiles: [mysql]
+
+  app-pgsql:
+    <<: *app
+    environment:
+      <<: *app-env
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+      DB_DATABASE: bookkeeper
+      DB_USERNAME: bookkeeper
+      DB_PASSWORD: secret
+    depends_on:
+      pgsql:
+        condition: service_healthy
+    profiles: [pgsql]
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: bookkeeper
+      MYSQL_USER: bookkeeper
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: secret
+    healthcheck:
+      # Query over TCP: during first-run initialisation MySQL answers pings
+      # on its socket before it accepts network connections.
+      test: ["CMD", "mysql", "-h", "127.0.0.1", "-u", "bookkeeper", "-psecret", "-e", "SELECT 1", "bookkeeper"]
+      interval: 5s
+      start_period: 20s
+      retries: 30
+    profiles: [mysql]
+
+  pgsql:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bookkeeper
+      POSTGRES_USER: bookkeeper
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookkeeper"]
+      interval: 5s
+      retries: 20
+    profiles: [pgsql]
+
+volumes:
+  vendor:

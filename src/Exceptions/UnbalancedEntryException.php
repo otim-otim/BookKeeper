@@ -2,19 +2,17 @@
 
 namespace OtimOtim\BookKeeper\Exceptions;
 
-use RuntimeException;
+use OtimOtim\BookKeeper\Support\Money;
 
-class UnbalancedEntryException extends RuntimeException
+class UnbalancedEntryException extends BookKeeperException
 {
-    public function __construct(float $totalDebits, float $totalCredits)
+    public function __construct(Money $debits, Money $credits)
     {
-        parent::__construct(
-            sprintf(
-                'Journal entry is not balanced. Total debits: %.4f, Total credits: %.4f, Difference: %.4f',
-                $totalDebits,
-                $totalCredits,
-                abs($totalDebits - $totalCredits)
-            )
-        );
+        parent::__construct(sprintf(
+            "Journal entry is not balanced. Total debits: %s, total credits: %s, difference: %s",
+            $debits->amount(),
+            $credits->amount(),
+            $debits->minus($credits)->abs()->amount(),
+        ));
     }
 }

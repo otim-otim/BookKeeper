@@ -1,8 +1,8 @@
 {
     "name": "otim-otim/bookkeeper",
-    "version": "1.0.1",
-    "description": "A Laravel package for double-entry bookkeeping and accounting statements.",
-    "keywords": ["laravel", "accounting", "bookkeeping", "double-entry", "ledger"],
+    "version": "2.0.0",
+    "description": "A complete double-entry accounting engine for Laravel: chart of accounts, immutable journals, periods and closing, subledgers, invoices, bills, payments, tax, fixed assets, budgets, tills, bank reconciliation and financial statements.",
+    "keywords": ["laravel", "accounting", "bookkeeping", "double-entry", "ledger", "general-ledger", "chart-of-accounts", "sacco"],
     "license": "MIT",
     "authors": [
         {
@@ -11,14 +11,17 @@
         }
     ],
     "require": {
-        "php": "^8.1",
-        "illuminate/support": "^10.0|^11.0|^12.0|^13.0",
-        "illuminate/database": "^10.0|^11.0|^12.0|^13.0"
+        "php": "^8.4",
+        "brick/math": "^0.14.2|^0.15|^0.16|^0.17|^0.18|^0.19|^0.20|^1.0",
+        "illuminate/console": "^12.0|^13.0",
+        "illuminate/database": "^12.0|^13.0",
+        "illuminate/events": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^8.0|^9.0",
-        "pestphp/pest": "^2.0",
-        "pestphp/pest-plugin-laravel": "^2.0"
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^4.0|^5.0",
+        "pestphp/pest-plugin-laravel": "^4.0|^5.0"
     },
     "autoload": {
         "psr-4": {
@@ -27,7 +30,6 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "OtimOtim\\BookKeeper\\Tests\\": "tests/",
             "Tests\\": "tests/"
         }
     },
@@ -41,9 +43,13 @@
             }
         }
     },
+    "scripts": {
+        "test": "pest"
+    },
     "minimum-stability": "stable",
     "prefer-stable": true,
     "config": {
+        "sort-packages": true,
         "allow-plugins": {
             "pestphp/pest-plugin": true
         }
