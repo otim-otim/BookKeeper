@@ -2,16 +2,17 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Enums\BudgetStatus;
 
 /**
  * @property int $id
  * @property string $name
- * @property \Illuminate\Support\Carbon $start_date
- * @property \Illuminate\Support\Carbon $end_date
+ * @property Carbon $start_date
+ * @property Carbon $end_date
  * @property ?int $branch_id
  * @property BudgetStatus $status
  */

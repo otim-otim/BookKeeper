@@ -6,15 +6,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
 use OtimOtim\BookKeeper\Enums\SessionStatus;
+use OtimOtim\BookKeeper\Support\Money;
 
 /**
  * @property int $id
  * @property int $till_id
  * @property SessionStatus $status
- * @property \OtimOtim\BookKeeper\Support\Money $opening_balance
- * @property ?\OtimOtim\BookKeeper\Support\Money $expected_balance
- * @property ?\OtimOtim\BookKeeper\Support\Money $counted_balance
- * @property ?\OtimOtim\BookKeeper\Support\Money $variance
+ * @property Money $opening_balance
+ * @property ?Money $expected_balance
+ * @property ?Money $counted_balance
+ * @property ?Money $variance
  */
 class TillSession extends Model
 {

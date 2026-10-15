@@ -34,3 +34,14 @@ For a full history, replay each 1.x journal entry with `BookKeeper::record()` an
 - **Report signatures.** `generalLedger()` takes any account reference (model, ID, code or `@role`) instead of only a model.
 - **Balance sheet.** The balance sheet now includes unclosed profit as `current_earnings`, so it balances before year end.
 - **Relation names.** `Transaction` is now `JournalLine`. The `transactions()` relations remain as deprecated aliases of `lines()`.
+
+## Changes within 2.0 (multi-currency, DTOs)
+
+These changes apply if you installed an earlier 2.0 development build.
+
+- **New migration.** `2026_10_16_000001_create_bookkeeper_settings_table` adds the `bookkeeper_settings` table, `bookkeeper_bank_statements.currency` and `bookkeeper_documents.rounding`. Tenant apps should republish it with `--tag=bookkeeper-tenant-migrations` and run tenant migrations.
+- **Base currency is stored per set of books.** It is locked on the first posting. Existing books lock to the configured currency the next time something posts.
+- **Unknown currency codes are rejected.** Add custom units to `bookkeeper.currencies`.
+- **Month-end close revalues foreign-currency balances.** Turn this off with `revaluation.enabled = false`.
+- **DTOs.** Service methods accept DTOs from `OtimOtim\BookKeeper\Data`. The array forms still work unchanged. `LedgerService` now depends on `LineNormalizer`, and settlement moved from `DocumentService` to `SettlementService`. `DocumentService::applyCredit()`, `unapply()` and `refreshStatus()` still delegate there.
+- **New account role.** Charts gained a `cash_rounding` account (5950). Re-run `BookKeeper::chart()->import(...)` to add it to existing books.

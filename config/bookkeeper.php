@@ -36,13 +36,29 @@ return [
     'currency' => env('BOOKKEEPER_CURRENCY', 'USD'),
 
     /*
-    | Number of decimal places (minor units) per currency. Currencies not listed
-    | fall back to the ISO 4217 table bundled with the package, then to 2.
+    | The base currency above is only the default for new books. It is stored
+    | in the database when the books are set up (bookkeeper:install
+    | --currency=KES, or BookKeeper::settings()->setBaseCurrency()) or on the
+    | first posting, and cannot change once entries exist. Multi-tenant apps
+    | therefore get one base currency per tenant.
+    |
+    | Every ISO 4217 currency is built in. Override precision or cash rounding,
+    | or add a custom unit:
+    |   'KES' => ['decimals' => 2, 'cash_increment' => '1'],
+    |   'XBT' => ['decimals' => 8, 'name' => 'Bitcoin'],
     */
 
     'currencies' => [
         // 'UGX' => 0,
     ],
+
+    /*
+    | Locale used by Money::format() (needs the intl extension). Null uses
+    | the application locale. Chart templates also use it to pick account
+    | names when they provide translations.
+    */
+
+    'locale' => env('BOOKKEEPER_LOCALE'),
 
     /*
     | Rounding mode used when a calculation (tax, interest, depreciation, FX)
@@ -51,6 +67,38 @@ return [
     */
 
     'rounding' => 'HalfUp',
+
+    /*
+    |--------------------------------------------------------------------------
+    | Exchange rates and revaluation
+    |--------------------------------------------------------------------------
+    */
+
+    'exchange_rates' => [
+        // A class implementing OtimOtim\BookKeeper\Contracts\ExchangeRateProvider,
+        // used by `bookkeeper:rates` (schedule it daily). Bundled:
+        //   OtimOtim\BookKeeper\RateProviders\OpenExchangeRatesApiProvider (open.er-api.com, free)
+        //   OtimOtim\BookKeeper\RateProviders\FixedRateProvider (the 'fixed' rates below)
+        'provider' => null,
+
+        // Currencies to fetch. Empty: every currency used by accounts, documents and stored rates.
+        'currencies' => [],
+
+        // Pegged or manually set rates for FixedRateProvider: code => base units per 1 unit.
+        'fixed' => [],
+    ],
+
+    'revaluation' => [
+        // Restate foreign-currency monetary balances at the closing rate at month end.
+        'enabled' => true,
+
+        // Role of the account that takes unrealised exchange gains and losses.
+        'role' => 'fx_gain_loss',
+
+        // Reverse the revaluation the next day, so settlements realise
+        // differences against the original rates.
+        'reverse' => true,
+    ],
 
     /*
     |--------------------------------------------------------------------------
@@ -137,6 +185,11 @@ return [
             'payment_made' => 'PAY-{Y}-{seq}',
         ],
         'default_payment_terms_days' => 30,
+
+        // Round document totals to the currency's smallest cash denomination
+        // (e.g. CHF 0.05, UGX 50), posting the difference to the
+        // "cash_rounding" role. Can also be set per document.
+        'cash_rounding' => false,
 
         // Ageing buckets, in days past due (upper bounds). Anything beyond the
         // last bound lands in a final "over" bucket.

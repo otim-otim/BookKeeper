@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use OtimOtim\BookKeeper\Enums\EntryStatus;
 use OtimOtim\BookKeeper\Enums\EntryType;
 use OtimOtim\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Database;
 use OtimOtim\BookKeeper\Support\Money;
 
@@ -103,7 +104,28 @@ class BalanceService
         $debit = array_sum(array_column($totals, 'debit'));
         $credit = array_sum(array_column($totals, 'credit'));
 
-        return Money::ofMinor($account->type->balanceFrom($debit, $credit));
+        return $account->type->balance($debit, $credit);
+    }
+
+    /**
+     * Balance in a transaction currency (default: the account's own), in
+     * the account's normal direction. For the base currency this is the
+     * ordinary balance; otherwise it sums the foreign amounts of lines in
+     * that currency.
+     */
+    public function currencyBalance(Account $account, \DateTimeInterface|string|null $asOf = null, ?string $currency = null, array $filters = []): Money
+    {
+        $currency = strtoupper($currency ?? $account->currencyCode());
+
+        if ($currency === Currency::base()) {
+            return $this->sum($account, ['to' => $asOf] + $filters);
+        }
+
+        $net = (int) $this->lineQuery(['accounts' => $account->is_group ? $account->descendantIds() : [$account->id], 'to' => $asOf] + $filters)
+            ->where('l.currency', $currency)
+            ->sum('l.foreign_amount');
+
+        return Money::ofMinor($account->type->isDebitNormal() ? $net : -$net, $currency);
     }
 
     /**

@@ -64,6 +64,7 @@ return [
             ['code' => '5750', 'name' => 'Cash over and short', 'subtype' => 'operating_expense', 'role' => 'cash_over_short'],
             ['code' => '5800', 'name' => 'Interest expense', 'subtype' => 'interest_expense', 'role' => 'interest_expense'],
             ['code' => '5900', 'name' => 'Income tax', 'subtype' => 'tax_expense', 'role' => 'income_tax'],
+            ['code' => '5950', 'name' => 'Cash rounding differences', 'subtype' => 'other_expense', 'role' => 'cash_rounding'],
         ]],
     ],
 ];

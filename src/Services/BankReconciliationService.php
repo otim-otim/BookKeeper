@@ -4,6 +4,9 @@ namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\BankStatementData;
+use OtimOtim\BookKeeper\Data\LineData;
+use OtimOtim\BookKeeper\Enums\Side;
 use OtimOtim\BookKeeper\Enums\StatementStatus;
 use OtimOtim\BookKeeper\Events\BankStatementReconciled;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
@@ -11,6 +14,7 @@ use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Models\BankStatement;
 use OtimOtim\BookKeeper\Models\BankStatementLine;
 use OtimOtim\BookKeeper\Models\JournalLine;
+use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Database;
 use OtimOtim\BookKeeper\Support\Money;
 
@@ -20,7 +24,8 @@ use OtimOtim\BookKeeper\Support\Money;
  * adjustments for items only the bank knows about (charges, interest),
  * then confirm the balances agree.
  *
- * Statement amounts are positive for money in, negative for money out.
+ * Statement amounts are positive for money in, negative for money out, and
+ * in the account's own currency (USD for a USD bank account).
  */
 class BankReconciliationService
 {
@@ -28,6 +33,7 @@ class BankReconciliationService
         protected AccountService $accounts,
         protected BalanceService $balances,
         protected LedgerService $ledger,
+        protected ExchangeRateService $rates,
     ) {}
 
     /**
@@ -36,28 +42,31 @@ class BankReconciliationService
      * $data: start_date, end_date, opening_balance, closing_balance, reference, notes.
      * $lines: list of [date, amount, description?, reference?] arrays (keyed or positional).
      */
-    public function import(Account|int|string $account, array $data, array $lines): BankStatement
+    public function import(Account|int|string $account, BankStatementData|array $data, array $lines = []): BankStatement
     {
+        $data = is_array($data) ? BankStatementData::fromArray($data + ['lines' => $lines]) : $data;
         $account = $this->accounts->resolve($account);
+        $currency = $account->currencyCode();
 
-        return Database::transaction(function () use ($account, $data, $lines) {
+        return Database::transaction(function () use ($account, $data, $currency) {
             $statement = BankStatement::create([
                 'account_id' => $account->id,
-                'reference' => $data['reference'] ?? null,
-                'start_date' => Carbon::parse($data['start_date']),
-                'end_date' => Carbon::parse($data['end_date']),
-                'opening_balance' => Money::of($data['opening_balance'] ?? 0),
-                'closing_balance' => Money::of($data['closing_balance']),
+                'currency' => $currency,
+                'reference' => $data->reference,
+                'start_date' => $data->startDate,
+                'end_date' => $data->endDate,
+                'opening_balance' => Money::of($data->openingBalance, $currency),
+                'closing_balance' => Money::of($data->closingBalance, $currency),
                 'status' => StatementStatus::Draft,
-                'notes' => $data['notes'] ?? null,
+                'notes' => $data->notes,
             ]);
 
-            foreach ($lines as $line) {
+            foreach ($data->lines as $line) {
                 $statement->lines()->create([
-                    'date' => Carbon::parse($line['date'] ?? $line[0]),
-                    'amount' => Money::of($line['amount'] ?? $line[1]),
-                    'description' => $line['description'] ?? $line[2] ?? null,
-                    'reference' => $line['reference'] ?? $line[3] ?? null,
+                    'date' => $line->date,
+                    'amount' => Money::of($line->amount, $currency),
+                    'description' => $line->description,
+                    'reference' => $line->reference,
                 ]);
             }
 
@@ -110,7 +119,7 @@ class BankReconciliationService
                 $bestScore = null;
 
                 foreach ($candidates as $i => $candidate) {
-                    if ($candidate->signedAmount()->minor() !== $line->amount->minor()) {
+                    if ($this->amountOf($candidate, $statement)->minor() !== $line->amount->minor()) {
                         continue;
                     }
 
@@ -146,7 +155,7 @@ class BankReconciliationService
         if ($journalLine->account_id !== $line->statement->account_id) {
             throw new InvalidOperationException('The ledger line is on a different account.');
         }
-        if ($journalLine->signedAmount()->minor() !== $line->amount->minor()) {
+        if ($this->amountOf($journalLine, $line->statement)->minor() !== $line->amount->minor()) {
             throw new InvalidOperationException('The ledger line amount differs from the statement line.');
         }
         if (BankStatementLine::query()->where('journal_line_id', $journalLine->id)->exists()) {
@@ -182,10 +191,14 @@ class BankReconciliationService
         return Database::transaction(function () use ($line, $statement, $counterAccount, $options) {
             $amount = $line->amount->abs();
             $in = $line->amount->isPositive();
+            // Foreign-currency statement: convert at the line date's rate.
+            $rate = $this->rates->rate($amount->currency(), $line->date);
+            $base = $amount->convertTo(Currency::base(), $rate);
+            $bankSide = $in ? Side::Debit : Side::Credit;
 
             $entry = $this->ledger->record([
-                ['account' => $statement->account_id, ($in ? 'debit' : 'credit') => $amount],
-                ['account' => $counterAccount, ($in ? 'credit' : 'debit') => $amount, 'subledger' => $options['subledger'] ?? null],
+                LineData::converted($statement->account_id, $bankSide, $amount, $base, $rate),
+                new LineData($counterAccount, $bankSide->opposite(), $base, subledger: $options['subledger'] ?? null),
             ], [
                 'date' => $line->date,
                 'memo' => $options['memo'] ?? $line->description ?? 'Bank statement adjustment',
@@ -209,20 +222,22 @@ class BankReconciliationService
     public function summary(BankStatement $statement): array
     {
         $account = $statement->account;
-        $book = $this->balances->balance($account, $statement->end_date);
+        $currency = $statement->closing_balance->currency();
+        $book = $this->balances->currencyBalance($account, $statement->end_date, $currency);
 
         $outstanding = $this->unmatchedLedgerLines($statement);
-        $outstandingTotal = Money::sum($outstanding->map->signedAmount());
+        $outstandingTotal = Money::sum($outstanding->map(fn (JournalLine $l) => $this->amountOf($l, $statement)), $currency);
 
         $unmatched = $statement->lines()->whereNull('journal_line_id')->get();
-        $unmatchedTotal = Money::sum($unmatched->pluck('amount'));
+        $unmatchedTotal = Money::sum($unmatched->pluck('amount'), $currency);
 
-        $statementMovement = Money::sum($statement->lines()->get()->pluck('amount'));
+        $statementMovement = Money::sum($statement->lines()->get()->pluck('amount'), $currency);
         $adjustedBank = $statement->closing_balance->plus($outstandingTotal);
         $difference = $adjustedBank->minus($book)->minus($unmatchedTotal);
 
         return [
             'account' => $account->code,
+            'currency' => $currency,
             'start_date' => $statement->start_date->toDateString(),
             'end_date' => $statement->end_date->toDateString(),
             'statement_opening' => $statement->opening_balance,
@@ -233,7 +248,7 @@ class BankReconciliationService
                 'date' => $l->entry->date->toDateString(),
                 'number' => $l->entry->number,
                 'memo' => $l->memo ?? $l->entry->memo,
-                'amount' => $l->signedAmount(),
+                'amount' => $this->amountOf($l, $statement),
             ])->all(),
             'outstanding_total' => $outstandingTotal,
             'unmatched_statement_lines' => $unmatched->count(),
@@ -266,6 +281,14 @@ class BankReconciliationService
         event(new BankStatementReconciled($statement));
 
         return $statement;
+    }
+
+    /**
+     * A ledger line's money in (+) or out (-) in the statement's currency.
+     */
+    protected function amountOf(JournalLine $line, BankStatement $statement): Money
+    {
+        return $line->signedAmountIn($statement->closing_balance->currency());
     }
 
     protected function assertDraft(BankStatement $statement): void

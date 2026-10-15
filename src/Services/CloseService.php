@@ -5,6 +5,7 @@ namespace OtimOtim\BookKeeper\Services;
 use Illuminate\Support\Carbon;
 use OtimOtim\BookKeeper\Close\CloseContext;
 use OtimOtim\BookKeeper\Contracts\CloseTask;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\AccountType;
 use OtimOtim\BookKeeper\Enums\CloseType;
 use OtimOtim\BookKeeper\Enums\EntryType;
@@ -36,6 +37,7 @@ class CloseService
         protected BalanceService $balances,
         protected PeriodService $periods,
         protected FixedAssetService $assets,
+        protected RevaluationService $revaluation,
     ) {}
 
     /**
@@ -66,7 +68,7 @@ class CloseService
     }
 
     /**
-     * End of month: host tasks, depreciation, then lock the period.
+     * End of month: host tasks, FX revaluation, depreciation, then lock the period.
      */
     public function closeMonth(Period|int|\DateTimeInterface|string $period): CloseRun
     {
@@ -81,12 +83,16 @@ class CloseService
             $context = new CloseContext(CloseType::Month, $period->end_date->copy(), $period, $period->fiscalYear);
 
             $this->runTasks(CloseType::Month, $context);
+            $revaluation = config('bookkeeper.revaluation.enabled', true)
+                ? $this->revaluation->revalue($period->end_date)
+                : null;
             $depreciation = $this->assets->depreciate($period->end_date);
             $this->periods->close($period);
 
             return $this->record(CloseType::Month, $period->end_date, [
                 'period_id' => $period->id,
                 'depreciation_entries' => $depreciation->count(),
+                'revaluation_entry_id' => $revaluation?->id,
             ]);
         });
     }
@@ -198,7 +204,7 @@ class CloseService
             }
 
             // Post the opposite of the debit-minus-credit balance.
-            $lines[] = ['account' => $account, ($balance > 0 ? 'credit' : 'debit') => Money::ofMinor(abs($balance))];
+            $lines[] = LineData::signed($account, Money::ofMinor(-$balance));
             $net -= $balance;
         }
 
@@ -207,7 +213,7 @@ class CloseService
         }
 
         if ($net !== 0) {
-            $lines[] = ['account' => '@retained_earnings', ($net > 0 ? 'credit' : 'debit') => Money::ofMinor(abs($net))];
+            $lines[] = LineData::signed('@retained_earnings', Money::ofMinor(-$net));
         }
 
         return $this->ledger->record($lines, [

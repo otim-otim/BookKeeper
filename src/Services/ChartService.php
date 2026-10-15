@@ -2,8 +2,7 @@
 
 namespace OtimOtim\BookKeeper\Services;
 
-use OtimOtim\BookKeeper\Enums\AccountSubtype;
-use OtimOtim\BookKeeper\Enums\AccountType;
+use OtimOtim\BookKeeper\Data\AccountData;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Support\Database;
@@ -52,54 +51,45 @@ class ChartService
      * Create the accounts in a template. Existing codes are left alone, but
      * pick up roles they do not have yet, so importing is safe to repeat.
      *
+     * Account names in a template may be translations; $locale picks the
+     * one stored (default: bookkeeper.locale, then the app locale).
+     *
      * @return int accounts created
      */
-    public function import(string|array $template): int
+    public function import(string|array $template, ?string $locale = null): int
     {
         $definition = is_array($template) ? $template : $this->load($template);
 
-        return Database::transaction(function () use ($definition) {
+        return Database::transaction(function () use ($definition, $locale) {
             $created = 0;
             foreach ($definition['accounts'] ?? [] as $node) {
-                $created += $this->importNode($node, null);
+                $created += $this->importNode($node, null, $locale);
             }
 
             return $created;
         });
     }
 
-    protected function importNode(array $node, ?Account $parent): int
+    protected function importNode(array $node, ?Account $parent, ?string $locale): int
     {
-        $subtype = isset($node['subtype']) ? AccountSubtype::from($node['subtype']) : null;
-        $type = isset($node['type']) ? AccountType::from($node['type']) : ($subtype?->type() ?? $parent?->type);
-
-        if ($type === null) {
-            throw new InvalidOperationException("Chart account [{$node['code']}] needs a type or subtype.");
-        }
-
         $created = 0;
         $account = Account::query()->where('code', $node['code'])->first();
 
         if ($account === null) {
-            $account = $this->accounts->create($node['code'], $node['name'], $type, [
+            $account = $this->accounts->createFrom(AccountData::fromArray([
+                'type' => $node['type'] ?? $parent?->type,
                 'parent' => $parent,
-                'subtype' => $subtype,
-                'role' => $node['role'] ?? null,
-                'description' => $node['description'] ?? null,
                 'is_group' => ! empty($node['children']) || ($node['group'] ?? false),
-                'is_control' => $node['control'] ?? false,
                 'is_system' => true,
-                'tags' => $node['tags'] ?? null,
-                'currency' => $node['currency'] ?? null,
-                'cash_flow_category' => $node['cash_flow'] ?? null,
-            ]);
+                'locale' => $locale,
+            ] + $node));
             $created++;
         } elseif (isset($node['role']) && $account->role === null && ! $this->accounts->hasRole($node['role'])) {
             $this->accounts->assignRole($account, $node['role']);
         }
 
         foreach ($node['children'] ?? [] as $child) {
-            $created += $this->importNode($child, $account);
+            $created += $this->importNode($child, $account, $locale);
         }
 
         return $created;

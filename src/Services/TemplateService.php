@@ -2,10 +2,13 @@
 
 namespace OtimOtim\BookKeeper\Services;
 
+use OtimOtim\BookKeeper\Data\LineData;
+use OtimOtim\BookKeeper\Data\PostingTemplateData;
+use OtimOtim\BookKeeper\Data\TemplateLineData;
 use OtimOtim\BookKeeper\Exceptions\InvalidEntryException;
 use OtimOtim\BookKeeper\Exceptions\TemplateNotFoundException;
-use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Models\JournalEntry;
+use OtimOtim\BookKeeper\Support\AccountReference;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
@@ -27,77 +30,57 @@ use OtimOtim\BookKeeper\Support\Money;
  */
 class TemplateService
 {
-    /** @var array<string, array> */
+    /** @var array<string, PostingTemplateData> */
     protected array $runtime = [];
 
     public function __construct(protected LedgerService $ledger) {}
 
-    public function define(string $name, array $template): void
+    public function define(string $name, PostingTemplateData|array $template): void
     {
-        $this->runtime[$name] = $template;
+        $this->runtime[$name] = PostingTemplateData::from(is_array($template) ? ['name' => $name] + $template : $template);
     }
 
     public function has(string $name): bool
     {
-        return isset($this->all()[$name]);
+        return isset($this->runtime[$name]) || array_key_exists($name, (array) config('bookkeeper.postings', []));
     }
 
-    public function get(string $name): array
+    public function get(string $name): PostingTemplateData
     {
         // Template names contain dots, so read the array rather than config("...{$name}").
-        return $this->all()[$name] ?? throw new TemplateNotFoundException($name);
+        $configured = (array) config('bookkeeper.postings', []);
+
+        return $this->runtime[$name]
+            ?? (isset($configured[$name]) ? PostingTemplateData::fromArray(['name' => $name] + $configured[$name]) : null)
+            ?? throw new TemplateNotFoundException($name);
     }
 
     /**
-     * @return array<string, array>
+     * @return array<string, PostingTemplateData>
      */
     public function all(): array
     {
-        return $this->runtime + (array) config('bookkeeper.postings', []);
+        $names = array_unique([...array_keys((array) config('bookkeeper.postings', [])), ...array_keys($this->runtime)]);
+
+        return array_combine($names, array_map(fn (string $name) => $this->get($name), $names));
     }
 
     /**
-     * Build the journal lines a template produces, without posting them.
+     * The journal lines a template produces, without posting them.
+     *
+     * @return list<LineData>
      */
     public function lines(string $name, array $amounts, array $context = []): array
     {
         $template = $this->get($name);
         $lines = [];
 
-        foreach ($template['lines'] ?? [] as $i => $definition) {
-            $side = isset($definition['debit']) ? 'debit' : (isset($definition['credit']) ? 'credit' : null);
+        foreach ($template->lines as $line) {
+            $amount = $this->evaluate($line->amount, $amounts, $name);
 
-            if ($side === null) {
-                throw new InvalidEntryException("Template [{$name}] line {$i} names neither a debit nor a credit account.");
+            if (! $amount->isZero()) {
+                $lines[] = $this->line($line, $amount, $context, $name);
             }
-
-            $amount = $this->evaluate($definition['amount'] ?? 'amount', $amounts, $name);
-
-            if ($amount->isZero()) {
-                continue;
-            }
-
-            $account = $this->account($definition[$side], $context, $name);
-
-            if ($amount->isNegative()) {
-                $side = $side === 'debit' ? 'credit' : 'debit';
-                $amount = $amount->abs();
-            }
-
-            $line = ['account' => $account, $side => $amount];
-
-            if (isset($definition['subledger'])) {
-                $line['subledger'] = $context[$definition['subledger']]
-                    ?? throw new InvalidEntryException("Template [{$name}] needs '{$definition['subledger']}' in the context.");
-            }
-
-            foreach (['memo', 'tax_rate', 'branch_id'] as $key) {
-                if (isset($definition[$key])) {
-                    $line[$key] = $definition[$key];
-                }
-            }
-
-            $lines[] = $line;
         }
 
         return $lines;
@@ -115,11 +98,31 @@ class TemplateService
         $template = $this->get($name);
 
         return $this->ledger->record($this->lines($name, $amounts, $context), $options + array_filter([
-            'memo' => $template['memo'] ?? null,
-            'type' => $template['type'] ?? null,
+            'memo' => $template->memo,
+            'type' => $template->type,
             'source' => $context['source'] ?? null,
             'metadata' => ['template' => $name],
         ]));
+    }
+
+    protected function line(TemplateLineData $line, Money $amount, array $context, string $name): LineData
+    {
+        $account = AccountReference::fromConfig($line->account, $context)
+            ?? throw new InvalidEntryException("Template [{$name}] needs the account '".ltrim($line->account, ':')."' in the context.");
+
+        $subledger = $line->subledger === null ? null
+            : ($context[$line->subledger] ?? throw new InvalidEntryException("Template [{$name}] needs '{$line->subledger}' in the context."));
+
+        // A negative amount posts on the other side.
+        return new LineData(
+            account: $account,
+            side: $amount->isNegative() ? $line->side->opposite() : $line->side,
+            amount: $amount->abs(),
+            memo: $line->memo,
+            branchId: $line->branchId,
+            subledger: $subledger,
+            taxRate: $line->taxRate,
+        );
     }
 
     protected function evaluate(string $expression, array $amounts, string $name): Money
@@ -142,23 +145,5 @@ class TemplateService
         }
 
         return $total;
-    }
-
-    protected function account(mixed $reference, array $context, string $name): Account|int|string
-    {
-        if ($reference instanceof Account || is_int($reference)) {
-            return $reference;
-        }
-
-        if (str_starts_with($reference, ':')) {
-            return $context[substr($reference, 1)]
-                ?? throw new InvalidEntryException("Template [{$name}] needs the account '".substr($reference, 1)."' in the context.");
-        }
-
-        if (str_starts_with($reference, '#')) {
-            return substr($reference, 1);
-        }
-
-        return '@'.$reference;
     }
 }

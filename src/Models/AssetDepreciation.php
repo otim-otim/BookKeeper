@@ -2,8 +2,8 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
 
 class AssetDepreciation extends Model

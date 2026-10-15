@@ -2,8 +2,8 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use OtimOtim\BookKeeper\Casts\DateCast;
 
 /**
  * Applies a payment or a credit-type document to an invoice or bill.

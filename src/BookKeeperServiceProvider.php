@@ -7,6 +7,7 @@ use OtimOtim\BookKeeper\Console\CloseDayCommand;
 use OtimOtim\BookKeeper\Console\CloseMonthCommand;
 use OtimOtim\BookKeeper\Console\CloseYearCommand;
 use OtimOtim\BookKeeper\Console\DepreciateCommand;
+use OtimOtim\BookKeeper\Console\FetchRatesCommand;
 use OtimOtim\BookKeeper\Console\InstallCommand;
 use OtimOtim\BookKeeper\Console\ProcessReversalsCommand;
 use OtimOtim\BookKeeper\Console\SnapshotCommand;
@@ -33,7 +34,11 @@ class BookKeeperServiceProvider extends ServiceProvider
         Services\LedgerService::class,
         Services\PaymentService::class,
         Services\PeriodService::class,
+        Services\RevaluationService::class,
         Services\SequenceService::class,
+        Services\SettlementService::class,
+        Services\LineNormalizer::class,
+        Services\SettingsService::class,
         Services\StatementService::class,
         Services\SubledgerService::class,
         Services\TaxService::class,
@@ -85,6 +90,7 @@ class BookKeeperServiceProvider extends ServiceProvider
                 DepreciateCommand::class,
                 SnapshotCommand::class,
                 ProcessReversalsCommand::class,
+                FetchRatesCommand::class,
             ]);
         }
     }

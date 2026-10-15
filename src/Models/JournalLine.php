@@ -9,6 +9,7 @@ use OtimOtim\BookKeeper\Casts\MoneyCast;
 use OtimOtim\BookKeeper\Enums\EntryStatus;
 use OtimOtim\BookKeeper\Enums\Side;
 use OtimOtim\BookKeeper\Exceptions\ImmutableRecordException;
+use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
@@ -95,6 +96,21 @@ class JournalLine extends Model
     public function signedAmount(): Money
     {
         return $this->debit->minus($this->credit);
+    }
+
+    /**
+     * Debit minus credit in the line's transaction currency (the foreign
+     * amount), or in base currency for base-currency lines.
+     */
+    public function signedAmountIn(?string $currency = null): Money
+    {
+        if ($currency === null || $currency === Currency::base()) {
+            return $this->signedAmount();
+        }
+
+        return $this->currency === $currency
+            ? Money::ofMinor((int) $this->foreign_amount, $currency)
+            : Money::zero($currency);
     }
 
     public function scopeDebits(Builder $query): Builder

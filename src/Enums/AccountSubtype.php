@@ -111,6 +111,19 @@ enum AccountSubtype: string
         return in_array($this, [self::LoanLossProvision, self::AccumulatedDepreciation, self::Drawings], true);
     }
 
+    /**
+     * Monetary items (cash, receivables, payables, borrowings) are restated
+     * at the closing rate; non-monetary items (fixed assets, inventory,
+     * prepayments, deferred income) stay at their historical rate (IAS 21).
+     */
+    public function isMonetary(): bool
+    {
+        return ! in_array($this, [
+            self::Inventory, self::Prepayment, self::Investment, self::FixedAsset,
+            self::AccumulatedDepreciation, self::IntangibleAsset, self::DeferredIncome,
+        ], true) && $this->type()->isBalanceSheet() && $this->type() !== AccountType::Equity;
+    }
+
     public function isCurrent(): bool
     {
         return in_array($this, [

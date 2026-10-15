@@ -4,6 +4,9 @@ namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\AllocationData;
+use OtimOtim\BookKeeper\Data\LineData;
+use OtimOtim\BookKeeper\Data\PaymentData;
 use OtimOtim\BookKeeper\Enums\DocumentStatus;
 use OtimOtim\BookKeeper\Enums\DocumentType;
 use OtimOtim\BookKeeper\Enums\PaymentDirection;
@@ -17,9 +20,11 @@ use OtimOtim\BookKeeper\Models\Allocation;
 use OtimOtim\BookKeeper\Models\Contact;
 use OtimOtim\BookKeeper\Models\Document;
 use OtimOtim\BookKeeper\Models\Payment;
+use OtimOtim\BookKeeper\Models\TaxRate;
 use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Database;
 use OtimOtim\BookKeeper\Support\Money;
+use OtimOtim\BookKeeper\Support\Morph;
 
 /**
  * Customer receipts, vendor payments and refunds, with allocation to
@@ -28,12 +33,6 @@ use OtimOtim\BookKeeper\Support\Money;
  * Received payments settle invoices (and supplier debit notes, i.e. vendor
  * refunds). Made payments settle bills (and customer credit notes, i.e.
  * refunds). Anything not allocated stays on account with the contact.
- *
- * Options: date, currency, exchange_rate, allocations (list of
- * [document, amount] pairs, or documents to settle in order), withholding
- * (TaxRate/ID/code), withholding_amount, ledger ('sales'|'purchases' for
- * unallocated payments), method, reference, memo, number, branch_id,
- * source (model), metadata, idempotency_key.
  */
 class PaymentService
 {
@@ -41,14 +40,14 @@ class PaymentService
         protected AccountService $accounts,
         protected ContactService $contacts,
         protected LedgerService $ledger,
-        protected DocumentService $documents,
+        protected SettlementService $settlements,
         protected TaxService $taxes,
         protected ExchangeRateService $rates,
         protected SequenceService $sequences,
     ) {}
 
     /**
-     * Money received into $account (bank, cash, mobile money).
+     * Money received into $account (bank, cash, mobile money). Options: see PaymentData.
      */
     public function receive(Contact|Model|int $contact, Money|int|float|string $amount, Account|int|string $account, array $options = []): Payment
     {
@@ -56,7 +55,7 @@ class PaymentService
     }
 
     /**
-     * Money paid out of $account.
+     * Money paid out of $account. Options: see PaymentData.
      */
     public function pay(Contact|Model|int $contact, Money|int|float|string $amount, Account|int|string $account, array $options = []): Payment
     {
@@ -65,134 +64,72 @@ class PaymentService
 
     public function record(PaymentDirection $direction, Contact|Model|int $contact, Money|int|float|string $amount, Account|int|string $account, array $options = []): Payment
     {
-        if (isset($options['idempotency_key']) && ($existing = $this->findByIdempotencyKey($options['idempotency_key']))) {
+        return $this->recordFrom(PaymentData::fromArray(compact('direction', 'contact', 'amount', 'account') + $options));
+    }
+
+    public function recordFrom(PaymentData $data): Payment
+    {
+        if ($data->idempotencyKey !== null && ($existing = $this->findByIdempotencyKey($data->idempotencyKey))) {
             return $existing;
         }
 
-        $contact = $this->contacts->resolve($contact);
-        $account = $this->accounts->resolve($account);
-        $date = Carbon::parse($options['date'] ?? now())->startOfDay();
-        $currency = strtoupper($options['currency'] ?? ($amount instanceof Money ? $amount->currency() : ($contact->currency ?? Currency::base())));
-        $amount = $amount instanceof Money ? $amount : Money::of($amount, $currency);
-        $rate = (string) ($options['exchange_rate'] ?? $this->rates->rate($currency, $date));
+        $contact = $this->contacts->resolve($data->contact);
+        $account = $this->accounts->resolve($data->account);
+        $date = ($data->date ?? now())->copy()->startOfDay();
+        $currency = Currency::assertValid($data->currency($contact->currency, Currency::base()));
+        $amount = $data->amount instanceof Money ? $data->amount : Money::of($data->amount, $currency);
+        $rate = $data->exchangeRate ?? $this->rates->rate($currency, $date);
 
         if (! $amount->isPositive()) {
             throw new InvalidOperationException('A payment amount must be positive.');
         }
 
-        $allocations = $this->resolveAllocations($direction, $contact, $currency, $amount, $options['allocations'] ?? []);
-        $ledger = $this->ledgerFor($direction, $allocations, $options['ledger'] ?? null);
-        $control = $this->accounts->findByRole($ledger === 'sales' ? 'accounts_receivable' : 'accounts_payable');
+        $allocations = $this->resolveAllocations($data->direction, $contact, $amount, $data->allocations);
+        $control = $this->accounts->findByRole($this->ledgerFor($data, $allocations) === 'sales' ? 'accounts_receivable' : 'accounts_payable');
+        [$withholdingRate, $withholding] = $this->withholding($data, $amount, $date);
 
-        // Withholding tax: deducted from the cash that moves.
-        $withholdingRate = isset($options['withholding']) ? $this->taxes->resolve($options['withholding'], $date) : null;
-        if ($withholdingRate && $withholdingRate->type !== TaxType::Withholding) {
-            throw new InvalidOperationException("Tax rate [{$withholdingRate->code}] is not a withholding rate.");
-        }
-        $withholding = match (true) {
-            isset($options['withholding_amount']) => Money::of($options['withholding_amount'], $currency),
-            $withholdingRate !== null => $amount->percent($withholdingRate->rate),
-            default => Money::zero($currency),
-        };
-
-        if ($withholding->isGreaterThan($amount)) {
-            throw new InvalidOperationException('Tax withheld cannot exceed the payment amount.');
-        }
-
-        return Database::transaction(function () use ($direction, $contact, $account, $date, $currency, $amount, $rate, $allocations, $control, $withholdingRate, $withholding, $options) {
-            $number = $options['number'] ?? $this->sequences->next(
-                'payment:'.$direction->value,
-                config('bookkeeper.documents.number_formats.payment_'.$direction->value, strtoupper($direction->value).'-{Y}-{seq}'),
-                $date,
-            );
-
+        return Database::transaction(function () use ($data, $contact, $account, $date, $amount, $rate, $allocations, $control, $withholdingRate, $withholding) {
             $payment = Payment::create([
-                'direction' => $direction,
-                'number' => $number,
+                'direction' => $data->direction,
+                'number' => $data->number ?? $this->nextNumber($data->direction, $date),
                 'contact_id' => $contact->id,
                 'date' => $date,
-                'currency' => $currency,
+                'currency' => $amount->currency(),
                 'exchange_rate' => $rate,
                 'amount' => $amount,
                 'withholding_tax_rate_id' => $withholdingRate?->id,
                 'withholding_amount' => $withholding,
                 'account_id' => $account->id,
                 'control_account_id' => $control->id,
-                'status' => 'posted',
-                'method' => $options['method'] ?? null,
-                'reference' => $options['reference'] ?? null,
-                'memo' => $options['memo'] ?? null,
-                'branch_id' => $options['branch_id'] ?? null,
-                'source_type' => isset($options['source']) ? $options['source']->getMorphClass() : null,
-                'source_id' => isset($options['source']) ? $options['source']->getKey() : null,
-                'metadata' => $options['metadata'] ?? null,
-            ]);
+                'method' => $data->method,
+                'reference' => $data->reference,
+                'memo' => $data->memo,
+                'branch_id' => $data->branchId,
+                'metadata' => $data->metadata,
+            ] + Morph::attributes($data->source, 'source'));
 
-            $foreign = $currency !== Currency::base();
-            $cashSide = $direction === PaymentDirection::Received ? Side::Debit : Side::Credit;
-            $controlSide = $cashSide->opposite();
-
-            $netBase = $amount->minus($withholding)->convertTo(Currency::base(), $rate);
-            $withholdingBase = $withholding->convertTo(Currency::base(), $rate);
-
-            $lines = [$this->line($account, $cashSide, $amount->minus($withholding), $netBase, $foreign, $rate, 'Payment '.$number)];
-
-            if ($withholding->isPositive()) {
-                $lines[] = $this->line($withholdingRate?->account_id ?? '@withholding_tax', $cashSide, $withholding, $withholdingBase, $foreign, $rate, 'Tax withheld') + [
-                    'tax_rate' => $withholdingRate?->id,
-                    'taxable_amount' => $amount->convertTo(Currency::base(), $rate),
-                ];
-            }
-
-            $controlBase = Money::zero();
-            $reliefs = [];
-            $allocated = Money::zero($currency);
-
-            foreach ($allocations as [$document, $allocationAmount]) {
-                $relief = $this->documents->baseRelief($document, $allocationAmount);
-                $reliefs[] = [$document, $allocationAmount, $relief];
-                $lines[] = $this->line($control, $controlSide, $allocationAmount, $relief, $foreign, $rate, $document->number) + ['subledger' => $contact];
-                $controlBase = $controlBase->plus($relief);
-                $allocated = $allocated->plus($allocationAmount);
-            }
-
-            $unallocated = $amount->minus($allocated);
-            if ($unallocated->isPositive()) {
-                $unallocatedBase = $unallocated->convertTo(Currency::base(), $rate);
-                $lines[] = $this->line($control, $controlSide, $unallocated, $unallocatedBase, $foreign, $rate, 'On account') + ['subledger' => $contact];
-                $controlBase = $controlBase->plus($unallocatedBase);
-            }
-
-            // Realised exchange difference between document and payment rates.
-            $difference = $netBase->plus($withholdingBase)->minus($controlBase);
-            if (! $difference->isZero()) {
-                $lines[] = [
-                    'account' => '@fx_gain_loss',
-                    ($difference->isPositive() ? $controlSide : $cashSide)->value => $difference->abs(),
-                    'memo' => 'Exchange difference',
-                ];
-            }
+            [$lines, $reliefs] = $this->journalLines($payment, $account, $control, $contact, $allocations, $withholdingRate);
 
             $entry = $this->ledger->record($lines, [
                 'date' => $date,
-                'memo' => ($options['memo'] ?? null) ?: ucfirst($direction->value).' payment '.$number.' - '.$contact->name,
-                'reference' => $options['reference'] ?? $number,
-                'branch_id' => $options['branch_id'] ?? null,
+                'memo' => $data->memo ?: ucfirst($data->direction->value).' payment '.$payment->number.' - '.$contact->name,
+                'reference' => $data->reference ?? $payment->number,
+                'branch_id' => $data->branchId,
                 'source' => $payment,
-                'idempotency_key' => $options['idempotency_key'] ?? null,
+                'idempotency_key' => $data->idempotencyKey,
             ]);
 
             $payment->update(['journal_entry_id' => $entry->id]);
 
-            foreach ($reliefs as [$document, $allocationAmount, $relief]) {
+            foreach ($reliefs as [$document, $allocated, $relief]) {
                 Allocation::create([
                     'document_id' => $document->id,
                     'payment_id' => $payment->id,
                     'date' => $date,
-                    'amount' => $allocationAmount->minor(),
+                    'amount' => $allocated->minor(),
                     'base_amount' => $relief->minor(),
                 ]);
-                $this->documents->refreshStatus($document);
+                $this->settlements->refreshStatus($document);
             }
 
             event(new PaymentRecorded($payment));
@@ -218,20 +155,20 @@ class PaymentService
             throw new InvalidOperationException('The amount exceeds what is unallocated on the payment.');
         }
 
-        [[, $amount]] = $this->resolveAllocations($payment->direction, $payment->contact, $payment->currency, $amount, [[$document, $amount]]);
+        [[, $amount]] = $this->resolveAllocations($payment->direction, $payment->contact, $amount, [new AllocationData($document, $amount)]);
 
         if ($payment->control_account_id !== $this->accounts->findByRole($document->type->controlRole())->id) {
             throw new InvalidOperationException('The payment and document are on different ledgers.');
         }
 
         return Database::transaction(function () use ($payment, $document, $amount, $options) {
-            $relief = $this->documents->baseRelief($document, $amount);
+            $relief = $this->settlements->baseRelief($document, $amount);
             $atPaymentRate = $amount->convertTo(Currency::base(), (string) $payment->exchange_rate);
 
-            $fx = $this->documents->fxAdjustment(
+            $fx = $this->settlements->fxAdjustment(
                 $payment->controlAccount,
                 $payment->contact,
-                $payment->direction === PaymentDirection::Received ? Side::Credit : Side::Debit,
+                $this->cashSide($payment->direction)->opposite(),
                 $relief->minus($atPaymentRate),
                 $options['date'] ?? now(),
                 $payment,
@@ -246,7 +183,7 @@ class PaymentService
                 'journal_entry_id' => $fx?->id,
             ]);
 
-            $this->documents->refreshStatus($document);
+            $this->settlements->refreshStatus($document);
 
             return $allocation;
         });
@@ -263,18 +200,16 @@ class PaymentService
         }
 
         return Database::transaction(function () use ($payment, $options) {
-            $this->ledger->reverse($payment->journalEntry, [
-                'date' => $options['date'] ?? now(),
-                'memo' => 'Void payment '.$payment->number,
-            ]);
+            $date = $options['date'] ?? now();
+            $this->ledger->reverse($payment->journalEntry, ['date' => $date, 'memo' => 'Void payment '.$payment->number]);
 
             foreach ($payment->allocations()->with(['document', 'journalEntry'])->get() as $allocation) {
                 if ($allocation->journalEntry && ! $allocation->journalEntry->isReversed()) {
-                    $this->ledger->reverse($allocation->journalEntry, ['date' => $options['date'] ?? now()]);
+                    $this->ledger->reverse($allocation->journalEntry, ['date' => $date]);
                 }
                 $document = $allocation->document;
                 $allocation->delete();
-                $this->documents->refreshStatus($document);
+                $this->settlements->refreshStatus($document);
             }
 
             $payment->update(['status' => 'void', 'voided_at' => now()]);
@@ -292,10 +227,94 @@ class PaymentService
         return $entryId ? Payment::query()->where('journal_entry_id', $entryId)->first() : null;
     }
 
+    // -----------------------------------------------------------------------
+    // Internals
+    // -----------------------------------------------------------------------
+
     /**
+     * Journal lines for a payment: cash and tax withheld on one side, the
+     * control account (per allocation, plus anything on account) on the
+     * other, and any exchange difference between document and payment rates.
+     *
+     * @param  list<array{0: Document, 1: Money}>  $allocations
+     * @return array{0: list<LineData>, 1: list<array{0: Document, 1: Money, 2: Money}>}
+     */
+    protected function journalLines(Payment $payment, Account $account, Account $control, Contact $contact, array $allocations, ?TaxRate $withholdingRate): array
+    {
+        $rate = (string) $payment->exchange_rate;
+        $cashSide = $this->cashSide($payment->direction);
+        $controlSide = $cashSide->opposite();
+        $toBase = fn (Money $m) => $m->convertTo(Currency::base(), $rate);
+
+        $net = $payment->netAmount();
+        $lines = [LineData::converted($account, $cashSide, $net, $toBase($net), $rate, 'Payment '.$payment->number)];
+        $cashBase = $toBase($net);
+
+        if ($payment->withholding_amount->isPositive()) {
+            $withheldBase = $toBase($payment->withholding_amount);
+            $lines[] = LineData::converted($withholdingRate?->account_id ?? '@withholding_tax', $cashSide, $payment->withholding_amount, $withheldBase, $rate, 'Tax withheld',
+                taxRate: $withholdingRate?->id,
+                taxableAmount: $toBase($payment->amount),
+            );
+            $cashBase = $cashBase->plus($withheldBase);
+        }
+
+        $controlBase = Money::zero();
+        $reliefs = [];
+        $allocated = Money::zero($payment->currency);
+
+        foreach ($allocations as [$document, $amount]) {
+            $relief = $this->settlements->baseRelief($document, $amount);
+            $reliefs[] = [$document, $amount, $relief];
+            $lines[] = LineData::converted($control, $controlSide, $amount, $relief, $rate, $document->number, subledger: $contact);
+            $controlBase = $controlBase->plus($relief);
+            $allocated = $allocated->plus($amount);
+        }
+
+        $onAccount = $payment->amount->minus($allocated);
+        if ($onAccount->isPositive()) {
+            $lines[] = LineData::converted($control, $controlSide, $onAccount, $toBase($onAccount), $rate, 'On account', subledger: $contact);
+            $controlBase = $controlBase->plus($toBase($onAccount));
+        }
+
+        // Realised exchange difference between document and payment rates.
+        $difference = $cashBase->minus($controlBase);
+        if (! $difference->isZero()) {
+            $lines[] = new LineData('@fx_gain_loss', $difference->isPositive() ? $controlSide : $cashSide, $difference->abs(), 'Exchange difference');
+        }
+
+        return [$lines, $reliefs];
+    }
+
+    /**
+     * @return array{0: ?TaxRate, 1: Money}
+     */
+    protected function withholding(PaymentData $data, Money $amount, Carbon $date): array
+    {
+        $rate = $data->withholding !== null ? $this->taxes->resolve($data->withholding, $date) : null;
+
+        if ($rate && $rate->type !== TaxType::Withholding) {
+            throw new InvalidOperationException("Tax rate [{$rate->code}] is not a withholding rate.");
+        }
+
+        $withheld = match (true) {
+            $data->withholdingAmount !== null => Money::of($data->withholdingAmount, $amount->currency()),
+            $rate !== null => $amount->percent($rate->rate),
+            default => Money::zero($amount->currency()),
+        };
+
+        if ($withheld->isGreaterThan($amount)) {
+            throw new InvalidOperationException('Tax withheld cannot exceed the payment amount.');
+        }
+
+        return [$rate, $withheld];
+    }
+
+    /**
+     * @param  list<AllocationData>  $input
      * @return list<array{0: Document, 1: Money}>
      */
-    protected function resolveAllocations(PaymentDirection $direction, Contact $contact, string $currency, Money $amount, array $input): array
+    protected function resolveAllocations(PaymentDirection $direction, Contact $contact, Money $amount, array $input): array
     {
         $settleable = $direction === PaymentDirection::Received
             ? [DocumentType::Invoice, DocumentType::DebitNote]
@@ -304,24 +323,21 @@ class PaymentService
         $remaining = $amount;
         $result = [];
 
-        foreach ($input as $item) {
-            [$document, $value] = $item instanceof Document ? [$item, null] : [$item[0] ?? $item['document'], $item[1] ?? $item['amount'] ?? null];
-            $document = $document instanceof Document ? $document->refresh() : Document::query()->findOrFail($document);
+        foreach ($input as $allocation) {
+            $document = $allocation->document instanceof Document ? $allocation->document->refresh() : Document::query()->findOrFail($allocation->document);
 
-            if (! in_array($document->type, $settleable, true)) {
-                throw new InvalidOperationException("A {$direction->value} payment cannot settle a {$document->type->value}.");
-            }
-            if ($document->contact_id !== $contact->id) {
-                throw new InvalidOperationException("Document [{$document->number}] belongs to another contact.");
-            }
-            if ($document->currency !== $currency) {
-                throw new InvalidOperationException("Document [{$document->number}] is in {$document->currency}; the payment is in {$currency}.");
-            }
-            if (! in_array($document->status, [DocumentStatus::Open, DocumentStatus::Partial], true)) {
-                throw new InvalidOperationException("Document [{$document->number}] is not outstanding.");
+            $problem = match (true) {
+                ! in_array($document->type, $settleable, true) => "A {$direction->value} payment cannot settle a {$document->type->value}.",
+                $document->contact_id !== $contact->id => "Document [{$document->number}] belongs to another contact.",
+                $document->currency !== $amount->currency() => "Document [{$document->number}] is in {$document->currency}; the payment is in {$amount->currency()}.",
+                ! in_array($document->status, [DocumentStatus::Open, DocumentStatus::Partial], true) => "Document [{$document->number}] is not outstanding.",
+                default => null,
+            };
+            if ($problem !== null) {
+                throw new InvalidOperationException($problem);
             }
 
-            $value = $value === null ? $document->amountDue()->min($remaining) : Money::of($value, $currency);
+            $value = $allocation->amount === null ? $document->amountDue()->min($remaining) : Money::of($allocation->amount, $amount->currency());
 
             if (! $value->isPositive() || $value->isGreaterThan($document->amountDue())) {
                 throw new InvalidOperationException("Allocation to [{$document->number}] must be positive and no more than its amount due.");
@@ -338,25 +354,28 @@ class PaymentService
         return $result;
     }
 
-    protected function ledgerFor(PaymentDirection $direction, array $allocations, ?string $ledger): string
+    protected function ledgerFor(PaymentData $data, array $allocations): string
     {
-        $ledgers = array_unique(array_map(fn ($a) => $a[0]->type->isSales() ? 'sales' : 'purchases', $allocations));
+        $ledgers = array_values(array_unique(array_map(fn ($a) => $a[0]->type->isSales() ? 'sales' : 'purchases', $allocations)));
 
         if (count($ledgers) > 1) {
             throw new InvalidOperationException('A payment cannot settle sales and purchase documents together.');
         }
 
-        return $ledgers[0] ?? $ledger ?? ($direction === PaymentDirection::Received ? 'sales' : 'purchases');
+        return $ledgers[0] ?? $data->ledger ?? ($data->direction === PaymentDirection::Received ? 'sales' : 'purchases');
     }
 
-    protected function line(Account|int|string $account, Side $side, Money $amount, Money $base, bool $foreign, string $rate, ?string $memo): array
+    protected function cashSide(PaymentDirection $direction): Side
     {
-        $line = ['account' => $account, $side->value => $foreign ? $amount : $base, 'memo' => $memo];
+        return $direction === PaymentDirection::Received ? Side::Debit : Side::Credit;
+    }
 
-        if ($foreign) {
-            $line += ['currency' => $amount->currency(), 'exchange_rate' => $rate, 'base_amount' => $base];
-        }
-
-        return $line;
+    protected function nextNumber(PaymentDirection $direction, Carbon $date): string
+    {
+        return $this->sequences->next(
+            "payment:{$direction->value}",
+            config("bookkeeper.documents.number_formats.payment_{$direction->value}", strtoupper($direction->value).'-{Y}-{seq}'),
+            $date,
+        );
     }
 }

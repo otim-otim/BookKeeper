@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use OtimOtim\BookKeeper\Enums\AccountSubtype;
 use OtimOtim\BookKeeper\Enums\AccountType;
 use OtimOtim\BookKeeper\Events\EntryPosted;
@@ -12,9 +13,7 @@ use OtimOtim\BookKeeper\Exceptions\PeriodClosedException;
 use OtimOtim\BookKeeper\Exceptions\UnbalancedEntryException;
 use OtimOtim\BookKeeper\Facades\BookKeeper;
 use OtimOtim\BookKeeper\Models\Account;
-use OtimOtim\BookKeeper\Models\Contact;
 use OtimOtim\BookKeeper\Models\JournalEntry;
-use Illuminate\Support\Facades\Event;
 
 beforeEach(function () {
     travelToDate('2026-03-15');

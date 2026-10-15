@@ -2,6 +2,8 @@
 
 namespace OtimOtim\BookKeeper\Enums;
 
+use OtimOtim\BookKeeper\Support\Money;
+
 enum AccountType: string
 {
     case Asset = 'asset';
@@ -44,6 +46,14 @@ enum AccountType: string
     public function balanceFrom(int $debits, int $credits): int
     {
         return $this->isDebitNormal() ? $debits - $credits : $credits - $debits;
+    }
+
+    /**
+     * balanceFrom() as Money in the base currency.
+     */
+    public function balance(int $debits, int $credits): Money
+    {
+        return Money::ofMinor($this->balanceFrom($debits, $credits));
     }
 
     public function statement(): string

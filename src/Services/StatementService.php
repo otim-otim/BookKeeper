@@ -59,6 +59,8 @@ class StatementService
                 'code' => $account->code,
                 'name' => $account->name,
                 'type' => $account->type->value,
+                'currency' => $account->currencyCode(),
+                'currency_balance' => $account->isForeignCurrency() ? $this->balances->currencyBalance($account, $asOf, null, ['branch' => $options['branch'] ?? null]) : null,
                 'debit' => Money::ofMinor(max($net, 0)),
                 'credit' => Money::ofMinor(max(-$net, 0)),
                 'total_debits' => Money::ofMinor($debit),
@@ -339,12 +341,27 @@ class StatementService
         $credits = Money::zero();
         $rows = [];
 
+        // Foreign-currency accounts also carry a running balance in their own currency.
+        $currency = $account->isForeignCurrency() ? $account->currency : null;
+        $foreignOpening = $currency
+            ? ($from ? $this->balances->currencyBalance($account, Carbon::parse($from)->subDay(), null, ['branch' => $branch]) : Money::zero($currency))
+            : null;
+        $foreignRunning = $foreignOpening;
+        $sign = $account->type->isDebitNormal() ? 1 : -1;
+
         foreach ($lines as $line) {
-            $running = $running->plus(Money::ofMinor($account->type->balanceFrom($line->debit->minor(), $line->credit->minor())));
+            $running = $running->plus($account->type->balance($line->debit->minor(), $line->credit->minor()));
             $debits = $debits->plus($line->debit);
             $credits = $credits->plus($line->credit);
 
-            $rows[] = [
+            $foreign = [];
+            if ($currency) {
+                $movement = $line->signedAmountIn($currency);
+                $foreignRunning = $foreignRunning->plus($sign === 1 ? $movement : $movement->negated());
+                $foreign = ['currency_amount' => $movement, 'currency_balance' => $foreignRunning];
+            }
+
+            $rows[] = $foreign + [
                 'date' => $line->entry->date->toDateString(),
                 'entry_id' => $line->journal_entry_id,
                 'number' => $line->entry->number,
@@ -371,6 +388,9 @@ class StatementService
                 'balance' => $running,
             ],
             'closing_balance' => $running,
+            'currency' => $account->currencyCode(),
+            'currency_opening_balance' => $foreignOpening,
+            'currency_closing_balance' => $foreignRunning,
         ];
     }
 
@@ -388,9 +408,7 @@ class StatementService
 
         $totals = $this->balances->totals(['accounts' => $accounts->pluck('id')->all(), 'to' => $this->date($asOf), 'branch' => $branch]);
 
-        return Money::sum($accounts->map(fn (Account $a) => Money::ofMinor(
-            $a->type->balanceFrom($totals[$a->id]['debit'] ?? 0, $totals[$a->id]['credit'] ?? 0)
-        )));
+        return Money::sum($accounts->map(fn (Account $a) => $a->balanceIn($totals)));
     }
 
     // -----------------------------------------------------------------------
@@ -412,7 +430,7 @@ class StatementService
             $index = count($rows);
             $rows[] = null; // placeholder keeps parents before children
 
-            $balance = Money::ofMinor($account->type->balanceFrom($totals[$account->id]['debit'] ?? 0, $totals[$account->id]['credit'] ?? 0));
+            $balance = $account->balanceIn($totals);
 
             foreach ($byParent->get($account->id, collect()) as $child) {
                 $balance = $balance->plus($walk($child, $depth + 1));
@@ -456,7 +474,7 @@ class StatementService
             $credit += $totals[$id]['credit'] ?? 0;
         }
 
-        return Money::ofMinor($type->balanceFrom($debit, $credit));
+        return $type->balance($debit, $credit);
     }
 
     /**
@@ -468,7 +486,7 @@ class StatementService
         $result = [];
 
         foreach (Account::query()->whereIn('type', array_map(fn ($t) => $t->value, $types))->whereNotNull('subtype')->get() as $account) {
-            $value = Money::ofMinor($account->type->balanceFrom($totals[$account->id]['debit'] ?? 0, $totals[$account->id]['credit'] ?? 0));
+            $value = $account->balanceIn($totals);
             if (! $value->isZero()) {
                 $key = $account->subtype->value;
                 $result[$key] = ($result[$key] ?? Money::zero())->plus($value);
@@ -495,7 +513,7 @@ class StatementService
         $accounts = Account::query()->postable()->whereIn('type', ['asset', 'liability'])->get();
 
         foreach ($accounts as $account) {
-            $value = Money::ofMinor($account->type->balanceFrom($totals[$account->id]['debit'] ?? 0, $totals[$account->id]['credit'] ?? 0));
+            $value = $account->balanceIn($totals);
             $current = (bool) $account->subtype?->isCurrent();
             $key = ($current ? 'current_' : 'non_current_').($account->type === AccountType::Asset ? 'assets' : 'liabilities');
             $out[$key] = $out[$key]->plus($value);

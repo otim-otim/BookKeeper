@@ -5,6 +5,8 @@ namespace OtimOtim\BookKeeper\Services;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\FixedAssetData;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\AssetStatus;
 use OtimOtim\BookKeeper\Enums\DepreciationMethod;
 use OtimOtim\BookKeeper\Enums\EntryType;
@@ -31,64 +33,45 @@ class FixedAssetService
     ) {}
 
     /**
-     * Register an asset.
-     *
-     * Data: code, name, cost, asset_account, useful_life_months (straight
-     * line) or declining_rate (annual %, declining balance), method,
-     * salvage_value, acquired_on, depreciation_start_date,
-     * accumulated_depreciation_account (default role "accumulated_depreciation"),
-     * depreciation_expense_account (default role "depreciation_expense"),
-     * paid_from (account: posts the purchase, Dr asset / Cr paid_from),
-     * description, branch_id, metadata.
+     * Register an asset (see FixedAssetData for the fields; arrays use
+     * snake_case keys). With paid_from, the purchase is posted too:
+     * Dr asset account, Cr paid_from.
      */
-    public function register(array $data): FixedAsset
+    public function register(FixedAssetData|array $data): FixedAsset
     {
-        $method = DepreciationMethod::from($data['method'] ?? DepreciationMethod::StraightLine->value);
+        $data = FixedAssetData::from($data);
+        $acquiredOn = ($data->acquiredOn ?? now())->copy()->startOfDay();
+        $cost = Money::of($data->cost);
 
-        if ($method === DepreciationMethod::StraightLine && empty($data['useful_life_months'])) {
-            throw new InvalidOperationException('Straight-line depreciation needs useful_life_months.');
-        }
-        if ($method === DepreciationMethod::DecliningBalance && empty($data['declining_rate'])) {
-            throw new InvalidOperationException('Declining-balance depreciation needs declining_rate (annual %).');
-        }
-
-        $cost = Money::of($data['cost']);
-        $salvage = Money::of($data['salvage_value'] ?? 0);
-        if ($salvage->isGreaterThan($cost)) {
-            throw new InvalidOperationException('Salvage value cannot exceed cost.');
-        }
-
-        $acquiredOn = Carbon::parse($data['acquired_on'] ?? now())->startOfDay();
-
-        return Database::transaction(function () use ($data, $method, $cost, $salvage, $acquiredOn) {
-            $assetAccount = $this->accounts->resolve($data['asset_account'] ?? '@fixed_assets');
+        return Database::transaction(function () use ($data, $acquiredOn, $cost) {
+            $assetAccount = $this->accounts->resolve($data->assetAccount);
 
             $asset = FixedAsset::create([
-                'code' => $data['code'],
-                'name' => $data['name'],
-                'description' => $data['description'] ?? null,
+                'code' => $data->code,
+                'name' => $data->name,
+                'description' => $data->description,
                 'asset_account_id' => $assetAccount->id,
-                'accumulated_depreciation_account_id' => $this->accounts->resolve($data['accumulated_depreciation_account'] ?? '@accumulated_depreciation')->id,
-                'depreciation_expense_account_id' => $this->accounts->resolve($data['depreciation_expense_account'] ?? '@depreciation_expense')->id,
+                'accumulated_depreciation_account_id' => $this->accounts->resolve($data->accumulatedDepreciationAccount)->id,
+                'depreciation_expense_account_id' => $this->accounts->resolve($data->depreciationExpenseAccount)->id,
                 'cost' => $cost,
-                'salvage_value' => $salvage,
-                'method' => $method,
-                'useful_life_months' => $data['useful_life_months'] ?? null,
-                'declining_rate' => isset($data['declining_rate']) ? (string) $data['declining_rate'] : null,
+                'salvage_value' => Money::of($data->salvageValue),
+                'method' => $data->method,
+                'useful_life_months' => $data->usefulLifeMonths,
+                'declining_rate' => $data->decliningRate,
                 'acquired_on' => $acquiredOn,
-                'depreciation_start_date' => Carbon::parse($data['depreciation_start_date'] ?? $acquiredOn)->startOfMonth(),
+                'depreciation_start_date' => ($data->depreciationStartDate ?? $acquiredOn)->copy()->startOfMonth(),
                 'status' => AssetStatus::Active,
-                'branch_id' => $data['branch_id'] ?? null,
-                'metadata' => $data['metadata'] ?? null,
+                'branch_id' => $data->branchId,
+                'metadata' => $data->metadata,
             ]);
 
-            if (isset($data['paid_from'])) {
-                $entry = $this->ledger->transfer($assetAccount, $data['paid_from'], $cost, [
+            if ($data->paidFrom !== null) {
+                $entry = $this->ledger->transfer($assetAccount, $data->paidFrom, $cost, [
                     'date' => $acquiredOn,
                     'memo' => "Acquisition of {$asset->code} {$asset->name}",
                     'branch_id' => $asset->branch_id,
                     'source' => $asset,
-                    'credit_subledger' => $data['paid_from_subledger'] ?? null,
+                    'credit_subledger' => $data->paidFromSubledger,
                 ]);
                 $asset->update(['acquisition_entry_id' => $entry->id]);
             }
@@ -217,16 +200,14 @@ class FixedAssetService
             $netBookValue = $asset->cost->minus($accumulated);
             $gain = $proceeds->minus($netBookValue);
 
+            // Zero lines (no proceeds, no gain) are dropped by the ledger.
             $lines = [
-                ['account' => $asset->accumulated_depreciation_account_id, 'debit' => $accumulated],
-                ['account' => $asset->asset_account_id, 'credit' => $asset->cost],
+                LineData::debit($asset->accumulated_depreciation_account_id, $accumulated),
+                LineData::credit($asset->asset_account_id, $asset->cost),
+                LineData::debit($options['proceeds_account'] ?? $asset->asset_account_id, $proceeds),
+                // A gain is income (credit); a loss is a debit.
+                LineData::signed('@asset_disposal', $gain->negated()),
             ];
-            if ($proceeds->isPositive()) {
-                $lines[] = ['account' => $options['proceeds_account'], 'debit' => $proceeds];
-            }
-            if (! $gain->isZero()) {
-                $lines[] = ['account' => '@asset_disposal', ($gain->isPositive() ? 'credit' : 'debit') => $gain->abs()];
-            }
 
             $entry = $this->ledger->record($lines, [
                 'date' => $date,
@@ -263,8 +244,8 @@ class FixedAssetService
                 }
 
                 $charges[] = [$asset, $charge];
-                $lines[] = ['account' => $asset->depreciation_expense_account_id, 'debit' => $charge, 'memo' => $asset->code, 'branch_id' => $asset->branch_id];
-                $lines[] = ['account' => $asset->accumulated_depreciation_account_id, 'credit' => $charge, 'memo' => $asset->code, 'branch_id' => $asset->branch_id];
+                $lines[] = LineData::debit($asset->depreciation_expense_account_id, $charge, memo: $asset->code, branchId: $asset->branch_id);
+                $lines[] = LineData::credit($asset->accumulated_depreciation_account_id, $charge, memo: $asset->code, branchId: $asset->branch_id);
             }
 
             if ($lines === []) {

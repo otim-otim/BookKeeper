@@ -4,6 +4,7 @@ namespace OtimOtim\BookKeeper\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
+use OtimOtim\BookKeeper\Support\Money;
 
 /**
  * @property int $id
@@ -11,12 +12,12 @@ use OtimOtim\BookKeeper\Casts\MoneyCast;
  * @property int $account_id
  * @property ?string $description
  * @property string $quantity
- * @property \OtimOtim\BookKeeper\Support\Money $unit_price
- * @property \OtimOtim\BookKeeper\Support\Money $discount
+ * @property Money $unit_price
+ * @property Money $discount
  * @property ?int $tax_rate_id
- * @property \OtimOtim\BookKeeper\Support\Money $net_amount
- * @property \OtimOtim\BookKeeper\Support\Money $tax_amount
- * @property \OtimOtim\BookKeeper\Support\Money $total
+ * @property Money $net_amount
+ * @property Money $tax_amount
+ * @property Money $total
  */
 class DocumentLine extends Model
 {

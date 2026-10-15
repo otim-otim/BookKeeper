@@ -22,7 +22,9 @@ final class Money implements JsonSerializable, Stringable
     private function __construct(
         private readonly int $minor,
         private readonly string $currency,
-    ) {}
+    ) {
+        Currency::assertValid($currency);
+    }
 
     /**
      * Create from a major-unit amount, e.g. Money::of('1500.50', 'USD').
@@ -174,7 +176,7 @@ final class Money implements JsonSerializable, Stringable
         $remainder = $this->minor;
 
         foreach ($ratios as $key => $ratio) {
-            $share = BigDecimal::of($this->minor)->multipliedBy($ratio)->dividedBy($total, 0, RoundingMode::Down)->toInt();
+            $share = BigDecimal::of($this->minor)->multipliedBy($ratio)->dividedBy($total, 0, Currency::roundingMode('Down'))->toInt();
             $results[$key] = $share;
             $remainder -= $share;
         }
@@ -257,14 +259,53 @@ final class Money implements JsonSerializable, Stringable
         return self::ofRounded($value, $currency, $rounding);
     }
 
+    /**
+     * Round to the currency's smallest cash denomination (e.g. CHF 0.05,
+     * UGX 50). Amounts in currencies without one are returned unchanged.
+     */
+    public function roundToCash(?RoundingMode $rounding = null): self
+    {
+        $increment = Currency::cashIncrement($this->currency);
+
+        if ($increment === null) {
+            return $this;
+        }
+
+        $step = BigDecimal::of($increment)->withPointMovedRight(Currency::precision($this->currency));
+        $units = BigDecimal::of($this->minor)->dividedBy($step, 0, $rounding ?? Currency::rounding());
+
+        return new self($units->multipliedBy($step)->toScale(0)->toInt(), $this->currency);
+    }
+
     public function toFloat(): float
     {
         return $this->toDecimal()->toFloat();
     }
 
-    public function format(): string
+    /**
+     * Format for display in a locale, e.g. "USh 50,000", "1.234,56 €",
+     * "₹1,00,000.00". Uses the intl extension when installed (locale from
+     * config('bookkeeper.locale') or the app locale); otherwise "UGX 50,000".
+     */
+    public function format(?string $locale = null): string
     {
-        return $this->currency.' '.number_format($this->toFloat(), Currency::precision($this->currency));
+        $precision = Currency::precision($this->currency);
+
+        if (class_exists(\NumberFormatter::class)) {
+            $locale ??= config('bookkeeper.locale') ?? (function_exists('app') ? app()->getLocale() : 'en');
+            $formatter = new \NumberFormatter($locale, \NumberFormatter::CURRENCY);
+            $formatter->setAttribute(\NumberFormatter::MIN_FRACTION_DIGITS, $precision);
+            $formatter->setAttribute(\NumberFormatter::MAX_FRACTION_DIGITS, $precision);
+            $formatted = $formatter->formatCurrency($this->toFloat(), $this->currency);
+
+            if ($formatted !== false) {
+                return $formatted;
+            }
+        }
+
+        $sign = $this->minor < 0 ? '-' : '';
+
+        return $sign.$this->currency.' '.number_format(abs($this->toFloat()), $precision);
     }
 
     public function jsonSerialize(): string

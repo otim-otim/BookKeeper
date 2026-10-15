@@ -52,7 +52,7 @@ class SubledgerService
 
         $listing = [];
         foreach ($rows as $row) {
-            $balance = Money::ofMinor($account->type->balanceFrom((int) $row->debit, (int) $row->credit));
+            $balance = $account->type->balance((int) $row->debit, (int) $row->credit);
             if ($includeZero || ! $balance->isZero()) {
                 $listing[] = [
                     'subledger_type' => $row->subledger_type,
@@ -82,7 +82,7 @@ class SubledgerService
             ->selectRaw('COALESCE(SUM(l.debit), 0) as debit, COALESCE(SUM(l.credit), 0) as credit')
             ->first();
 
-        $unassigned = Money::ofMinor($account->type->balanceFrom((int) $unassigned->debit, (int) $unassigned->credit));
+        $unassigned = $account->type->balance((int) $unassigned->debit, (int) $unassigned->credit);
         $difference = $control->minus($subledgers)->minus($unassigned);
 
         return [
@@ -122,7 +122,7 @@ class SubledgerService
         $rows = [];
 
         foreach ($lines as $line) {
-            $running = $running->plus(Money::ofMinor($account->type->balanceFrom($line->debit->minor(), $line->credit->minor())));
+            $running = $running->plus($account->type->balance($line->debit->minor(), $line->credit->minor()));
             $rows[] = [
                 'date' => $line->entry->date->toDateString(),
                 'number' => $line->entry->number,
@@ -151,7 +151,7 @@ class SubledgerService
      * savings.
      *
      * @return array<string, array{subledger_type: string, subledger_id: int|string, average: Money, opening: Money, closing: Money}>
-     *                                                                                                                                  keyed by "type:id"
+     *                                                                                                                                keyed by "type:id"
      */
     public function averageBalances(Account|int|string $account, \DateTimeInterface|string $from, \DateTimeInterface|string $to, ?Model $party = null): array
     {

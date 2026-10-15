@@ -18,6 +18,7 @@ RUN apk add --no-cache \
         git \
         unzip \
         icu-libs \
+        icu-data-full \
         libzip \
         postgresql-libs \
         sqlite-libs \

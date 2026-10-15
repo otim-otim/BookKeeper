@@ -2,9 +2,10 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
 use OtimOtim\BookKeeper\Enums\AssetStatus;
 use OtimOtim\BookKeeper\Enums\DepreciationMethod;
@@ -19,8 +20,8 @@ use OtimOtim\BookKeeper\Support\Money;
  * @property DepreciationMethod $method
  * @property ?int $useful_life_months
  * @property ?string $declining_rate
- * @property \Illuminate\Support\Carbon $acquired_on
- * @property \Illuminate\Support\Carbon $depreciation_start_date
+ * @property Carbon $acquired_on
+ * @property Carbon $depreciation_start_date
  * @property AssetStatus $status
  */
 class FixedAsset extends Model

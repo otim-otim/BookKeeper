@@ -122,7 +122,7 @@ class BudgetService
             /** @var Account $account */
             $account = $lines->first()->account;
             $budgetAmount = Money::sum($lines->pluck('amount'));
-            $actual = Money::ofMinor($account->type->balanceFrom($actuals[$accountId]['debit'] ?? 0, $actuals[$accountId]['credit'] ?? 0));
+            $actual = $account->balanceIn($actuals);
             $variance = $actual->minus($budgetAmount);
 
             $rows[] = [

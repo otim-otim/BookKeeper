@@ -2,11 +2,12 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
 use OtimOtim\BookKeeper\Enums\DocumentStatus;
 use OtimOtim\BookKeeper\Enums\DocumentType;
@@ -20,14 +21,15 @@ use OtimOtim\BookKeeper\Support\Money;
  * @property DocumentType $type
  * @property ?string $number
  * @property int $contact_id
- * @property \Illuminate\Support\Carbon $issue_date
- * @property \Illuminate\Support\Carbon $due_date
+ * @property Carbon $issue_date
+ * @property Carbon $due_date
  * @property string $currency
  * @property string $exchange_rate
  * @property bool $tax_inclusive
  * @property DocumentStatus $status
  * @property Money $subtotal
  * @property Money $tax_total
+ * @property Money $rounding
  * @property Money $total
  * @property Money $paid_total
  * @property ?int $journal_entry_id
@@ -39,6 +41,7 @@ class Document extends Model
     protected $attributes = [
         'subtotal' => 0,
         'tax_total' => 0,
+        'rounding' => 0,
         'total' => 0,
         'base_total' => 0,
         'paid_total' => 0,
@@ -52,6 +55,7 @@ class Document extends Model
         'tax_inclusive' => 'boolean',
         'subtotal' => MoneyCast::class.':currency',
         'tax_total' => MoneyCast::class.':currency',
+        'rounding' => MoneyCast::class.':currency',
         'total' => MoneyCast::class.':currency',
         'base_total' => MoneyCast::class,
         'paid_total' => MoneyCast::class.':currency',
@@ -100,7 +104,7 @@ class Document extends Model
 
     public function isOverdue(\DateTimeInterface|string|null $asOf = null): bool
     {
-        $asOf = \Illuminate\Support\Carbon::parse($asOf ?? now())->startOfDay();
+        $asOf = Carbon::parse($asOf ?? now())->startOfDay();
 
         return $this->status->isOutstanding() && $this->due_date->lt($asOf);
     }

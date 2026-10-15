@@ -3,24 +3,24 @@
 namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\AppropriationRuleData;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\AccountType;
 use OtimOtim\BookKeeper\Enums\EntryType;
 use OtimOtim\BookKeeper\Events\SurplusAppropriated;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Models\FiscalYear;
+use OtimOtim\BookKeeper\Support\AccountReference;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
  * Appropriate a fiscal year's surplus to reserves and funds (statutory
  * reserve, share transfer fund, stabilisation levy, ...), in rule order.
  *
- * A rule is an array with:
- *  - name
- *  - credit: role or "#code" receiving the amount
- *  - debit:  role or "#code" giving it (default retained_earnings)
- *  - base:   net_surplus | remaining | average_total_assets | fixed
- *  - percent (of the base) or amount (for "fixed")
+ * Rules are AppropriationRuleData (or arrays with name, credit, debit,
+ * base: net_surplus | remaining | average_total_assets | fixed, and percent
+ * or amount).
  */
 class AppropriationService
 {
@@ -35,26 +35,24 @@ class AppropriationService
     /**
      * Work out the appropriation without posting it.
      *
+     * @param  list<AppropriationRuleData|array>|null  $rules  default: config('bookkeeper.appropriation')
      * @return array{fiscal_year: string, net_surplus: Money, items: list<array>, total: Money, remaining: Money}
      */
     public function calculate(FiscalYear|int|string $fiscalYear, ?array $rules = null): array
     {
         $fiscalYear = $this->periods->resolveFiscalYear($fiscalYear);
-        $rules ??= (array) config('bookkeeper.appropriation', []);
+        $rules = AppropriationRuleData::collect($rules ?? (array) config('bookkeeper.appropriation', []));
 
         $surplus = $this->statements->netIncome($fiscalYear->start_date, $fiscalYear->end_date);
         $remaining = $surplus;
         $items = [];
 
-        foreach ($rules as $i => $rule) {
-            $base = $rule['base'] ?? 'net_surplus';
-
-            $amount = match ($base) {
-                'net_surplus' => $surplus->percent($rule['percent']),
-                'remaining' => $remaining->percent($rule['percent']),
-                'average_total_assets' => $this->averageTotalAssets($fiscalYear)->percent($rule['percent']),
-                'fixed' => Money::of($rule['amount']),
-                default => throw new InvalidOperationException("Unknown appropriation base [{$base}] in rule {$i}."),
+        foreach ($rules as $rule) {
+            $amount = match ($rule->base) {
+                'net_surplus' => $surplus->percent($rule->percent),
+                'remaining' => $remaining->percent($rule->percent),
+                'average_total_assets' => $this->averageTotalAssets($fiscalYear)->percent($rule->percent),
+                'fixed' => Money::of($rule->amount),
             };
 
             if (! $amount->isPositive()) {
@@ -62,11 +60,11 @@ class AppropriationService
             }
 
             $items[] = [
-                'name' => $rule['name'] ?? $rule['credit'],
-                'debit' => $rule['debit'] ?? 'retained_earnings',
-                'credit' => $rule['credit'],
-                'base' => $base,
-                'percent' => $rule['percent'] ?? null,
+                'name' => $rule->label(),
+                'debit' => $rule->debit,
+                'credit' => $rule->credit,
+                'base' => $rule->base,
+                'percent' => $rule->percent,
                 'amount' => $amount,
             ];
             $remaining = $remaining->minus($amount);
@@ -107,8 +105,8 @@ class AppropriationService
 
         $lines = [];
         foreach ($calculation['items'] as $item) {
-            $lines[] = ['account' => $this->ref($item['debit']), 'debit' => $item['amount'], 'memo' => $item['name']];
-            $lines[] = ['account' => $this->ref($item['credit']), 'credit' => $item['amount'], 'memo' => $item['name']];
+            $lines[] = LineData::debit(AccountReference::fromConfig($item['debit']), $item['amount'], memo: $item['name']);
+            $lines[] = LineData::credit(AccountReference::fromConfig($item['credit']), $item['amount'], memo: $item['name']);
         }
 
         $entry = $this->ledger->record($lines, [
@@ -143,10 +141,5 @@ class AppropriationService
         }, $points);
 
         return Money::sum($values)->dividedBy(count($values));
-    }
-
-    protected function ref(string $reference): string
-    {
-        return str_starts_with($reference, '#') ? substr($reference, 1) : '@'.$reference;
     }
 }

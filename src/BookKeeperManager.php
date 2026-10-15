@@ -2,7 +2,10 @@
 
 namespace OtimOtim\BookKeeper;
 
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Database\Eloquent\Model;
+use OtimOtim\BookKeeper\Data\EntryData;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\AccountSubtype;
 use OtimOtim\BookKeeper\Enums\AccountType;
 use OtimOtim\BookKeeper\Models\Account;
@@ -10,7 +13,6 @@ use OtimOtim\BookKeeper\Models\Contact;
 use OtimOtim\BookKeeper\Models\Document;
 use OtimOtim\BookKeeper\Models\JournalEntry;
 use OtimOtim\BookKeeper\Models\Payment;
-use OtimOtim\BookKeeper\Services;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
@@ -20,7 +22,7 @@ use OtimOtim\BookKeeper\Support\Money;
  */
 class BookKeeperManager
 {
-    public function __construct(protected \Illuminate\Contracts\Container\Container $app) {}
+    public function __construct(protected Container $app) {}
 
     // -----------------------------------------------------------------------
     // Services
@@ -74,6 +76,16 @@ class BookKeeperManager
     public function exchangeRates(): Services\ExchangeRateService
     {
         return $this->app->make(Services\ExchangeRateService::class);
+    }
+
+    public function settings(): Services\SettingsService
+    {
+        return $this->app->make(Services\SettingsService::class);
+    }
+
+    public function revaluation(): Services\RevaluationService
+    {
+        return $this->app->make(Services\RevaluationService::class);
     }
 
     public function contacts(): Services\ContactService
@@ -165,24 +177,24 @@ class BookKeeperManager
     /**
      * Record (and by default post) a balanced journal entry.
      *
-     * @param  array  $lines  e.g. [['account' => '1010', 'debit' => 100], ['account' => '@sales', 'credit' => 100]]
-     * @param  array  $options  date, memo, reference, branch_id, source, idempotency_key, status, ...
+     * @param  iterable<LineData|array>  $lines  e.g. [LineData::debit('@bank', 100), ['account' => '@sales', 'credit' => 100]]
+     * @param  EntryData|array  $entry  date, memo, reference, branch_id, source, idempotency_key, draft, ...
      */
-    public function record(array $lines, array $options = []): JournalEntry
+    public function record(iterable $lines, EntryData|array $entry = []): JournalEntry
     {
-        return $this->ledger()->record($lines, $options);
+        return $this->ledger()->record($lines, $entry);
     }
 
     public function transfer(
         Account|int|string $debitAccount,
         Account|int|string $creditAccount,
         Money|int|float|string $amount,
-        array $options = [],
+        EntryData|array $entry = [],
     ): JournalEntry {
-        return $this->ledger()->transfer($debitAccount, $creditAccount, $amount, $options);
+        return $this->ledger()->transfer($debitAccount, $creditAccount, $amount, $entry);
     }
 
-    public function reverse(JournalEntry $entry, array $options = []): JournalEntry
+    public function reverse(JournalEntry $entry, EntryData|array $options = []): JournalEntry
     {
         return $this->ledger()->reverse($entry, $options);
     }

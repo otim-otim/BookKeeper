@@ -5,11 +5,14 @@ namespace OtimOtim\BookKeeper\Services;
 use Brick\Math\BigDecimal;
 use Closure;
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\TaxType;
 use OtimOtim\BookKeeper\Events\DividendsPaid;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Models\Account;
+use OtimOtim\BookKeeper\Models\JournalEntry;
 use OtimOtim\BookKeeper\Models\TaxRate;
+use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
@@ -46,7 +49,7 @@ class DividendService
 
         $factor = BigDecimal::of((string) $rate);
         if ($options['prorate'] ?? false) {
-            $factor = $factor->multipliedBy((int) $from->diffInDays($to) + 1)->dividedBy(365, 12, \Brick\Math\RoundingMode::Down);
+            $factor = $factor->multipliedBy((int) $from->diffInDays($to) + 1)->dividedBy(365, 12, Currency::roundingMode('Down'));
         }
 
         $minimum = Money::of($options['minimum'] ?? 0);
@@ -101,32 +104,30 @@ class DividendService
      *    to pay into each member's savings account.
      *  - date, memo, idempotency_key
      */
-    public function pay(array $calculation, array $options = []): \OtimOtim\BookKeeper\Models\JournalEntry
+    public function pay(array $calculation, array $options = []): JournalEntry
     {
         if ($calculation['holders'] === []) {
             throw new InvalidOperationException('The calculation has no holders to pay.');
         }
 
         $credit = $options['credit'] ?? '@dividends_payable';
-        $lines = [['account' => $options['debit'] ?? '@retained_earnings', 'debit' => $calculation['totals']['gross'], 'memo' => 'Dividend declared']];
+        $lines = [LineData::debit($options['debit'] ?? '@retained_earnings', $calculation['totals']['gross'], memo: 'Dividend declared')];
 
         foreach ($calculation['holders'] as $holder) {
             $target = $credit instanceof Closure
                 ? $credit($holder['subledger_type'], $holder['subledger_id'])
                 : ['account' => $credit, 'subledger' => $this->subledgers->party($holder['subledger_type'], $holder['subledger_id'])];
 
-            $lines[] = ['credit' => $holder['net'], 'memo' => 'Dividend'] + $target;
+            $lines[] = LineData::credit($target['account'], $holder['net'], memo: 'Dividend', subledger: $target['subledger'] ?? null);
         }
 
         if ($calculation['totals']['withholding']->isPositive()) {
             $rate = TaxRate::query()->findOrFail($calculation['withholding_tax_rate_id']);
-            $lines[] = [
-                'account' => $rate->account_id,
-                'credit' => $calculation['totals']['withholding'],
-                'tax_rate' => $rate,
-                'taxable_amount' => $calculation['totals']['gross'],
-                'memo' => 'Withholding tax on dividends',
-            ];
+            $lines[] = LineData::credit($rate->account_id, $calculation['totals']['withholding'],
+                memo: 'Withholding tax on dividends',
+                taxRate: $rate,
+                taxableAmount: $calculation['totals']['gross'],
+            );
         }
 
         $entry = $this->ledger->record($lines, [

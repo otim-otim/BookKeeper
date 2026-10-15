@@ -3,9 +3,9 @@
 namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Database\Eloquent\Collection;
+use OtimOtim\BookKeeper\Data\AccountData;
 use OtimOtim\BookKeeper\Enums\AccountSubtype;
 use OtimOtim\BookKeeper\Enums\AccountType;
-use OtimOtim\BookKeeper\Enums\CashFlowCategory;
 use OtimOtim\BookKeeper\Exceptions\AccountNotFoundException;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Models\Account;
@@ -23,36 +23,25 @@ class AccountService
     public function __construct(protected BalanceService $balances) {}
 
     /**
-     * Create an account.
-     *
-     * Options: parent, subtype, role, description, currency, is_group,
-     * is_control, is_system, is_active, tags, cash_flow_category, metadata.
+     * Create an account from a code, name and type plus options (parent,
+     * subtype, role, description, currency, is_group, is_control,
+     * is_system, is_active, tags, cash_flow_category, metadata). The name
+     * may be translations: ['en' => 'Cash', 'sw' => 'Fedha taslimu'].
      */
-    public function create(string $code, string $name, AccountType|AccountSubtype|string $type, array $options = []): Account
+    public function create(string $code, string|array $name, AccountType|AccountSubtype|string $type, array $options = []): Account
     {
-        $subtype = $options['subtype'] ?? null;
-        if (is_string($subtype)) {
-            $subtype = AccountSubtype::from($subtype);
+        return $this->createFrom(AccountData::make($code, $name, $type, $options));
+    }
+
+    public function createFrom(AccountData $data): Account
+    {
+        $parent = $data->parent !== null ? $this->resolve($data->parent) : null;
+
+        if ($parent && $parent->type !== $data->type) {
+            throw new InvalidOperationException("Account [{$data->code}] must have the same type as its parent [{$parent->code}].");
         }
 
-        if ($type instanceof AccountSubtype) {
-            $subtype = $type;
-            $type = $type->type();
-        } elseif (is_string($type)) {
-            $type = AccountType::tryFrom($type) ?? ($subtype = AccountSubtype::from($type))->type();
-        }
-
-        if ($subtype && $subtype->type() !== $type) {
-            throw new InvalidOperationException("Subtype [{$subtype->value}] belongs to {$subtype->type()->value} accounts, not {$type->value}.");
-        }
-
-        $parent = isset($options['parent']) ? $this->resolve($options['parent']) : null;
-
-        if ($parent && $parent->type !== $type) {
-            throw new InvalidOperationException("Account [{$code}] must have the same type as its parent [{$parent->code}].");
-        }
-
-        return Database::transaction(function () use ($code, $name, $type, $subtype, $parent, $options) {
+        return Database::transaction(function () use ($data, $parent) {
             if ($parent && ! $parent->is_group) {
                 if ($parent->lines()->exists()) {
                     throw new InvalidOperationException("Parent account [{$parent->code}] has postings and cannot become a group account.");
@@ -60,29 +49,11 @@ class AccountService
                 $parent->update(['is_group' => true]);
             }
 
-            if (isset($options['role'])) {
-                Account::query()->where('role', $options['role'])->update(['role' => null]);
+            if ($data->role !== null) {
+                Account::query()->where('role', $data->role)->update(['role' => null]);
             }
 
-            $cashFlow = $options['cash_flow_category'] ?? null;
-
-            return Account::create([
-                'parent_id' => $parent?->id,
-                'code' => $code,
-                'name' => $name,
-                'type' => $type,
-                'subtype' => $subtype,
-                'role' => $options['role'] ?? null,
-                'description' => $options['description'] ?? null,
-                'currency' => isset($options['currency']) ? strtoupper($options['currency']) : null,
-                'is_group' => $options['is_group'] ?? false,
-                'is_control' => $options['is_control'] ?? false,
-                'is_system' => $options['is_system'] ?? false,
-                'is_active' => $options['is_active'] ?? true,
-                'cash_flow_category' => is_string($cashFlow) ? CashFlowCategory::from($cashFlow) : $cashFlow,
-                'tags' => $options['tags'] ?? null,
-                'metadata' => $options['metadata'] ?? null,
-            ]);
+            return Account::create($data->attributes($parent));
         });
     }
 

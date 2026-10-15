@@ -3,15 +3,16 @@
 namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use OtimOtim\BookKeeper\Data\TillData;
 use OtimOtim\BookKeeper\Enums\AccountSubtype;
 use OtimOtim\BookKeeper\Enums\SessionStatus;
 use OtimOtim\BookKeeper\Enums\TillType;
 use OtimOtim\BookKeeper\Events\TillSessionClosed;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
-use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Models\JournalEntry;
 use OtimOtim\BookKeeper\Models\Till;
 use OtimOtim\BookKeeper\Models\TillSession;
+use OtimOtim\BookKeeper\Support\AccountReference;
 use OtimOtim\BookKeeper\Support\Database;
 use OtimOtim\BookKeeper\Support\Money;
 
@@ -29,26 +30,31 @@ class TillService
     ) {}
 
     /**
-     * Create a till or vault. Pass an existing cash account as
-     * $options['account'], or a group account as $options['parent'] (default
-     * role "cash_on_hand") to create one with code $options['account_code'].
+     * Create a till or vault. Options: type ('till' or 'vault'), account (an
+     * existing cash account), or account_code and parent to create one
+     * (default parent: the "cash_on_hand" role), branch_id, metadata.
      */
     public function create(string $code, string $name, array $options = []): Till
     {
-        return Database::transaction(function () use ($code, $name, $options) {
-            $account = isset($options['account'])
-                ? $this->accounts->resolve($options['account'])
-                : $this->accounts->create($options['account_code'] ?? $code, $name, AccountSubtype::Cash, [
-                    'parent' => $options['parent'] ?? (($p = $this->parentFor()) ? $p : null),
+        return $this->createFrom(TillData::fromArray(compact('code', 'name') + $options));
+    }
+
+    public function createFrom(TillData $data): Till
+    {
+        return Database::transaction(function () use ($data) {
+            $account = $data->account !== null
+                ? $this->accounts->resolve($data->account)
+                : $this->accounts->create($data->accountCode ?? $data->code, $data->name, AccountSubtype::Cash, [
+                    'parent' => $data->parent ?? ($this->accounts->hasRole('cash_on_hand') ? '@cash_on_hand' : null),
                 ]);
 
             return Till::create([
-                'code' => $code,
-                'name' => $name,
-                'type' => TillType::from($options['type'] ?? TillType::Till->value),
+                'code' => $data->code,
+                'name' => $data->name,
+                'type' => $data->type,
                 'account_id' => $account->id,
-                'branch_id' => $options['branch_id'] ?? null,
-                'metadata' => $options['metadata'] ?? null,
+                'branch_id' => $data->branchId,
+                'metadata' => $data->metadata,
             ]);
         });
     }
@@ -178,16 +184,11 @@ class TillService
             return null;
         }
 
-        $overShort = '@'.config('bookkeeper.tills.over_short_role', 'cash_over_short');
+        $overShort = AccountReference::fromConfig(config('bookkeeper.tills.over_short_role', 'cash_over_short'));
         $memo = "{$label} ".($variance->isPositive() ? 'overage' : 'shortage')." at till {$till->code}";
 
         return $variance->isPositive()
             ? $this->ledger->transfer($till->account, $overShort, $variance, ['memo' => $memo, 'branch_id' => $till->branch_id, 'source' => $session])
             : $this->ledger->transfer($overShort, $till->account, $variance->abs(), ['memo' => $memo, 'branch_id' => $till->branch_id, 'source' => $session]);
-    }
-
-    protected function parentFor(): ?Account
-    {
-        return $this->accounts->hasRole('cash_on_hand') ? $this->accounts->findByRole('cash_on_hand') : null;
     }
 }

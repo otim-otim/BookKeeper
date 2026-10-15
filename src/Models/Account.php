@@ -12,6 +12,7 @@ use OtimOtim\BookKeeper\Enums\CashFlowCategory;
 use OtimOtim\BookKeeper\Enums\Side;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Services\BalanceService;
+use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Money;
 
 /**
@@ -100,6 +101,17 @@ class Account extends Model
             ?? CashFlowCategory::Operating;
     }
 
+    /**
+     * The account name in a locale, when the chart provided translations.
+     */
+    public function localizedName(?string $locale = null): string
+    {
+        $names = $this->metadata['names'] ?? [];
+        $locale ??= config('bookkeeper.locale') ?? app()->getLocale();
+
+        return $names[$locale] ?? $names[strtolower(strtok($locale, '_-'))] ?? $this->name;
+    }
+
     public function hasTag(string $tag): bool
     {
         return in_array($tag, $this->tags ?? [], true);
@@ -117,6 +129,39 @@ class Account extends Model
     public function balanceAsOf(\DateTimeInterface|string $date, ?int $branchId = null): Money
     {
         return app(BalanceService::class)->balance($this, $date, $branchId);
+    }
+
+    /**
+     * The currency the account is held in (its own, or the base currency).
+     */
+    public function currencyCode(): string
+    {
+        return $this->currency ?? Currency::base();
+    }
+
+    public function isForeignCurrency(): bool
+    {
+        return $this->currency !== null && $this->currency !== Currency::base();
+    }
+
+    /**
+     * Balance in the account's own currency (e.g. the USD balance of a USD
+     * bank account), in its normal-balance direction.
+     */
+    public function currencyBalance(\DateTimeInterface|string|null $asOf = null): Money
+    {
+        return app(BalanceService::class)->currencyBalance($this, $asOf);
+    }
+
+    /**
+     * This account's normal-direction balance from aggregated totals, as
+     * returned by BalanceService::totals() (keyed by account ID).
+     *
+     * @param  array<int, array{debit: int, credit: int}>  $totals
+     */
+    public function balanceIn(array $totals): Money
+    {
+        return $this->type->balance($totals[$this->id]['debit'] ?? 0, $totals[$this->id]['credit'] ?? 0);
     }
 
     /**

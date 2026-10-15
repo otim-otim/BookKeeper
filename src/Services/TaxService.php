@@ -3,6 +3,7 @@
 namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\TaxRateData;
 use OtimOtim\BookKeeper\Enums\AccountType;
 use OtimOtim\BookKeeper\Enums\TaxType;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
@@ -24,39 +25,36 @@ class TaxService
     ) {}
 
     /**
-     * Options: account (reference; the tax control account — omit on a
-     * purchase rate that is not recoverable), effective_from, effective_to,
-     * description.
+     * Create a tax rate. Options: account (the tax control account; omit on
+     * a purchase rate that is not recoverable), effective_from,
+     * effective_to, description.
      */
     public function create(string $code, string $name, TaxType|string $type, string|int|float $rate, array $options = []): TaxRate
     {
-        $type = $type instanceof TaxType ? $type : TaxType::from($type);
+        return $this->createFrom(TaxRateData::fromArray(compact('code', 'name', 'type', 'rate') + $options));
+    }
 
-        if ($type !== TaxType::Purchase && ! isset($options['account'])) {
-            throw new InvalidOperationException("A {$type->value} tax rate needs an account to post tax to.");
-        }
-
-        $from = isset($options['effective_from']) ? Carbon::parse($options['effective_from']) : null;
-
+    public function createFrom(TaxRateData $data): TaxRate
+    {
         // End the previous version of this code the day before the new one starts.
-        if ($from) {
+        if ($data->effectiveFrom) {
             TaxRate::query()
-                ->where('code', $code)
+                ->where('code', $data->code)
                 ->whereNull('effective_to')
-                ->where(fn ($q) => $q->whereNull('effective_from')->orWhere('effective_from', '<', $from->toDateString()))
-                ->update(['effective_to' => $from->copy()->subDay()->toDateString()]);
+                ->where(fn ($q) => $q->whereNull('effective_from')->orWhere('effective_from', '<', $data->effectiveFrom->toDateString()))
+                ->update(['effective_to' => $data->effectiveFrom->copy()->subDay()->toDateString()]);
         }
 
         return TaxRate::create([
-            'code' => $code,
-            'name' => $name,
-            'type' => $type,
-            'rate' => (string) $rate,
-            'account_id' => isset($options['account']) ? $this->accounts->resolve($options['account'])->id : null,
-            'effective_from' => $from?->toDateString(),
-            'effective_to' => isset($options['effective_to']) ? Carbon::parse($options['effective_to'])->toDateString() : null,
-            'is_active' => $options['is_active'] ?? true,
-            'description' => $options['description'] ?? null,
+            'code' => $data->code,
+            'name' => $data->name,
+            'type' => $data->type,
+            'rate' => $data->rate,
+            'account_id' => $data->account !== null ? $this->accounts->resolve($data->account)->id : null,
+            'effective_from' => $data->effectiveFrom,
+            'effective_to' => $data->effectiveTo,
+            'is_active' => $data->isActive,
+            'description' => $data->description,
         ]);
     }
 

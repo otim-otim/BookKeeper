@@ -16,6 +16,12 @@ BookKeeper is a complete double-entry accounting engine for Laravel. Install it 
 - **Year-end:** surplus appropriation, and dividends on time-weighted balances.
 - **Reports:** trial balance, balance sheet, income statement, cash flow, changes in equity, general ledger, subledger statements and prudential ratios.
 - **Exact money:** amounts are integer minor units with exact decimal arithmetic. Floats are never used for money.
+- **Any currency, any country:**
+  - Every ISO 4217 currency is built in, and each set of books has its own locked base currency.
+  - Foreign-currency accounts report balances in their own currency.
+  - Month-end revaluation, pluggable exchange-rate sources, locale-aware formatting and cash rounding.
+  - Chart templates for Uganda, Kenya and Tanzania SACCOs and for IFRS, in English and Swahili.
+- **Typed API:** every write operation accepts a readonly data transfer object (DTO) or the equivalent array.
 
 Requires **PHP 8.4+** and **Laravel 12 or 13**. Works on SQLite, MySQL and PostgreSQL.
 
@@ -27,29 +33,32 @@ Requires **PHP 8.4+** and **Laravel 12 or 13**. Works on SQLite, MySQL and Postg
 2. [Concepts](#concepts)
 3. [Double-entry bookkeeping](#double-entry-bookkeeping)
 4. [Money](#money)
-5. [Chart of accounts](#chart-of-accounts)
-6. [Journal entries](#journal-entries)
-7. [Posting templates](#posting-templates)
-8. [Subledgers](#subledgers)
-9. [Periods and closing](#periods-and-closing)
-10. [Receivables and payables](#receivables-and-payables)
-11. [Tax](#tax)
-12. [Fixed assets](#fixed-assets)
-13. [Budgets](#budgets)
-14. [Teller tills](#teller-tills)
-15. [Bank and mobile-money reconciliation](#bank-and-mobile-money-reconciliation)
-16. [Surplus appropriation and dividends](#surplus-appropriation-and-dividends)
-17. [Reports](#reports)
-18. [Events](#events)
-19. [Configuration reference](#configuration-reference)
-20. [Roles the package uses](#roles-the-package-uses)
-21. [Database tables](#database-tables)
-22. [Exceptions](#exceptions)
-23. [Multi-tenant applications](#multi-tenant-applications)
-24. [Using BookKeeper in Suluhu](#using-bookkeeper-in-suluhu)
-25. [Testing your application](#testing-your-application)
-26. [Development with Docker](#development-with-docker)
-27. [Upgrading from 1.x](#upgrading-from-1x)
+5. [Currencies and countries](#currencies-and-countries)
+6. [Data transfer objects](#data-transfer-objects)
+7. [Chart of accounts](#chart-of-accounts)
+8. [Journal entries](#journal-entries)
+9. [Posting templates](#posting-templates)
+10. [Subledgers](#subledgers)
+11. [Periods and closing](#periods-and-closing)
+12. [Receivables and payables](#receivables-and-payables)
+13. [Tax](#tax)
+14. [Fixed assets](#fixed-assets)
+15. [Budgets](#budgets)
+16. [Teller tills](#teller-tills)
+17. [Bank and mobile-money reconciliation](#bank-and-mobile-money-reconciliation)
+18. [Surplus appropriation and dividends](#surplus-appropriation-and-dividends)
+19. [Reports](#reports)
+20. [Events](#events)
+21. [Configuration reference](#configuration-reference)
+22. [Roles the package uses](#roles-the-package-uses)
+23. [Database tables](#database-tables)
+24. [Exceptions](#exceptions)
+25. [Multi-tenant applications](#multi-tenant-applications)
+26. [Using BookKeeper in Suluhu](#using-bookkeeper-in-suluhu)
+27. [Testing your application](#testing-your-application)
+28. [Architecture](#architecture)
+29. [Development with Docker](#development-with-docker)
+30. [Upgrading from 1.x](#upgrading-from-1x)
 
 ---
 
@@ -59,12 +68,14 @@ Requires **PHP 8.4+** and **Laravel 12 or 13**. Works on SQLite, MySQL and Postg
 composer require otim-otim/bookkeeper
 php artisan vendor:publish --tag=bookkeeper-config
 php artisan migrate
-php artisan bookkeeper:install --chart=standard     # or --chart=sacco-ug
+php artisan bookkeeper:install --chart=standard --currency=USD
+# SACCO charts set their country's currency: --chart=sacco-ug|sacco-ke|sacco-tz
+# Swahili account names: --locale=sw
 ```
 
 `bookkeeper:install` imports a chart of accounts and opens the current fiscal year. Run `php artisan bookkeeper:install --list` to see the available templates.
 
-Set the base currency in `config/bookkeeper.php`, or with `BOOKKEEPER_CURRENCY=UGX` in `.env`.
+The base currency is chosen once per set of books, using `--currency`, the chart's currency, or `BOOKKEEPER_CURRENCY`. It is locked when the first entry posts. See [Currencies and countries](#currencies-and-countries).
 
 ---
 
@@ -142,7 +153,153 @@ $a->isPositive(); $a->isZero(); $a->equals($b); $a->compareTo($b);
 Money::sum($list, 'USD');
 ```
 
-Raw amounts with more decimals than the currency allows (`Money::of('10.005', 'USD')`) throw `InvalidAmountException`. Minor-unit precision comes from ISO 4217: UGX has 0 decimals, USD and KES have 2. Override it in `bookkeeper.currencies`.
+Raw amounts with more decimals than the currency allows (`Money::of('10.005', 'USD')`) throw `InvalidAmountException`. Unknown currency codes throw `InvalidCurrencyException`. Precision comes from ISO 4217: UGX has 0 decimals, USD and KES have 2, KWD has 3.
+
+```php
+$a->roundToCash();          // CHF 1.03 → 1.05, UGX 1,020 → 1,000 (smallest coin)
+$a->format();               // "$1,500.50" (locale-aware, needs ext-intl)
+$a->format('de_DE');        // "1.500,50 $"
+```
+
+---
+
+## Currencies and countries
+
+BookKeeper works in any currency and any country. Nothing is hard-coded to one.
+
+**Base currency per set of books.** The books' base currency is stored in the database, not taken from config at run time:
+
+- It is set by `bookkeeper:install --currency=KES`, by `BookKeeper::settings()->setBaseCurrency('KES')`, or on the first posting, from `BOOKKEEPER_CURRENCY`.
+- After the first posting it can't change. Every stored amount is in that currency, so a later config change can never reinterpret your books.
+- In a multi-tenant app, each tenant's books carry their own base currency.
+
+```php
+BookKeeper::settings()->setBaseCurrency('TZS');   // allowed until the first posting
+BookKeeper::settings()->baseCurrency();           // "TZS"
+BookKeeper::settings()->isBaseCurrencyLocked();
+```
+
+**Every ISO 4217 currency is built in,** with its correct minor units. Override one, or add a custom unit, in config:
+
+```php
+'currencies' => [
+    'KES' => ['cash_increment' => '1'],                // smallest coin
+    'XBT' => ['decimals' => 8, 'name' => 'Bitcoin'],   // a non-ISO unit
+],
+```
+
+`Currency::all()`, `Currency::precision('KWD')`, `Currency::name('TZS')` and `Currency::cashIncrement('CHF')` expose the data.
+
+**Foreign-currency accounts.** Give an account a currency (`['currency' => 'USD']`) and every line on it must be in that currency. Its balance is reported both ways:
+
+```php
+BookKeeper::balance('1125');                       // base currency (UGX 560,000)
+BookKeeper::account('1125')->currencyBalance();    // USD 150.00
+```
+
+The general ledger and trial balance add `currency_balance` columns for these accounts. Bank reconciliation of a foreign account works entirely in that account's currency.
+
+**Exchange rates.** Rates are stored as base units per 1 foreign unit, by date. Lookups use the latest rate on or before the date.
+
+```php
+BookKeeper::exchangeRates()->set('USD', '3700', '2026-03-01');
+BookKeeper::exchangeRates()->convert(Money::of('100', 'USD'), 'KES');   // foreign → foreign via base
+BookKeeper::exchangeRates()->crossRate('USD', 'KES');
+```
+
+To fetch rates automatically, set `exchange_rates.provider` and schedule `bookkeeper:rates`. Two providers are bundled:
+
+| Provider | Source |
+| --- | --- |
+| `RateProviders\OpenExchangeRatesApiProvider` | open.er-api.com: free, daily, about 160 currencies including UGX, KES, TZS and RWF. Needs Laravel's HTTP client. |
+| `RateProviders\FixedRateProvider` | `exchange_rates.fixed` in config, for pegged or board-set rates |
+
+To add a source, such as a central bank's feed, implement `Contracts\ExchangeRateProvider`:
+
+```php
+class BankOfUgandaRates implements ExchangeRateProvider
+{
+    public function rates(string $base, array $currencies, CarbonInterface $date): array
+    {
+        // return ['USD' => '3712.50', 'KES' => '28.61'];   // base units per 1 unit
+    }
+}
+```
+
+**Realised and unrealised exchange differences:**
+
+- **Realised.** Settling a foreign invoice or bill at a different rate posts the difference to `fx_gain_loss`.
+- **Unrealised (IAS 21).** At month end, `closeMonth()` restates foreign-currency **monetary** balances at the closing rate: bank, receivables per customer, payables per vendor, and borrowings.
+  - It posts the difference to `fx_gain_loss` and reverses it the next day.
+  - Non-monetary items, such as fixed assets, inventory and prepayments, keep their historical rate.
+  - Run it directly with `BookKeeper::revaluation()->revalue('2026-03-31')`, or preview it with `calculate()`.
+
+**Cash rounding.** For currencies whose smallest coin is larger than one minor unit (CHF 0.05, UGX 50, SEK 1, ...), document totals can round to the coin. Set `'cash_rounding' => true` per document, or `documents.cash_rounding` globally. The difference posts to the `cash_rounding` role.
+
+**Formatting.** `Money::format($locale)` uses PHP's intl extension, with the locale taken from `bookkeeper.locale` or the app locale:
+
+- `$1,234.50` in `en_US`
+- `1.234,50 €` in `de_DE`
+- `USh 50,000` in `en_UG`
+
+Without intl, it falls back to `UGX 50,000`.
+
+On Alpine images, install `icu-data-full`. The default ICU data only covers English.
+
+**Country chart templates.**
+
+| Template | Country / standard | Currency | Languages |
+| --- | --- | --- | --- |
+| `standard` | General business | from settings | en |
+| `ifrs` | IFRS statement layout (IFRS 16 leases, IAS 37 provisions, IAS 12 deferred tax, OCI) | from settings | en |
+| `sacco-ug` | Uganda SACCO (UMRA): MTN and Airtel floats, Stabilisation Fund levy | UGX | en, sw |
+| `sacco-ke` | Kenya SACCO (SASRA): M-Pesa, BOSA/FOSA deposits, excise duty, SHIF, housing levy | KES | en, sw |
+| `sacco-tz` | Tanzania SACCOS (TCDC): M-Pesa, Mixx by Yas, Airtel, HaloPesa, SDL, WCF | TZS | en, sw |
+
+Template names can be translations (`'name' => ['en' => 'Cash', 'sw' => 'Fedha taslimu']`). `--locale` picks the stored name, and `Account::localizedName('sw')` returns any other. The Swahili names are a first draft and should be reviewed by a native speaker before production use.
+
+Tax rates, fiscal year start and numbering are all configuration, so any country's rules can be expressed without code changes.
+
+---
+
+## Data transfer objects
+
+Every write operation is described by a readonly DTO in `OtimOtim\BookKeeper\Data`. Services accept the DTO, or the equivalent snake_case array shown elsewhere in this README, which is converted with `Dto::fromArray()` at the boundary. Inside, services only work with typed, validated values.
+
+| DTO | Used by |
+| --- | --- |
+| `EntryData`, `LineData` | `record()`, `draft()`, `transfer()`, `reverse()` |
+| `AccountData` | `accounts()->createFrom()`, chart import |
+| `DocumentData`, `DocumentLineData` | `documents()->createFrom()` (invoices, bills, notes) |
+| `PaymentData`, `AllocationData` | `payments()->recordFrom()` |
+| `TaxRateData` | `taxes()->createFrom()` |
+| `ContactData` | `contacts()->createFrom()` |
+| `FixedAssetData` | `assets()->register()` |
+| `BankStatementData`, `StatementLineData` | `bank()->import()` |
+| `TillData` | `tills()->createFrom()` |
+| `PostingTemplateData`, `TemplateLineData` | `templates()->define()` and config templates |
+| `AppropriationRuleData` | `appropriation()` rules |
+
+```php
+use OtimOtim\BookKeeper\Data\{EntryData, LineData, DocumentData, DocumentLineData};
+
+BookKeeper::record(
+    [LineData::debit('@bank', Money::of('250.00')), LineData::credit('@sales', '250.00', memo: 'Consulting')],
+    new EntryData(memo: 'March retainer', reference: 'INV-88', idempotencyKey: 'retainer:2026-03'),
+);
+
+BookKeeper::documents()->createFrom(new DocumentData(
+    type: DocumentType::Invoice,
+    contact: $customer,
+    lines: [new DocumentLineData('@sales', '40.00', quantity: '3', tax: 'VAT')],
+    cashRounding: true,
+));
+
+$entry = new EntryData(memo: 'Original');
+$entry->with(memo: 'Changed');      // DTOs are immutable; with() returns a copy
+```
+
+DTOs validate when they are constructed. For example, a subtype that doesn't match its type, a document without lines, or an unknown appropriation base all throw immediately.
 
 ---
 
@@ -181,7 +338,7 @@ BookKeeper::balance('1000');                // groups roll up their children
 † Contra account. Cash, bank and mobile money count as cash in the cash flow statement. Investments and fixed assets are investing activities. Borrowings, share capital, dividends payable and drawings are financing. Everything else is operating. Override this per account with `cash_flow_category`.
 
 
-Templates are PHP arrays in `resources/charts`. Publish them with `--tag=bookkeeper-charts`, or drop your own into `resources/bookkeeper/charts`.
+Templates are PHP arrays in `resources/charts`. See the bundled templates under [Currencies and countries](#currencies-and-countries). Publish them with `--tag=bookkeeper-charts`, or drop your own into `resources/bookkeeper/charts`. A template may set a `currency`, and its account names may be translations.
 
 ---
 
@@ -295,7 +452,7 @@ BookKeeper::periods()->close('2026-06-01');      // lock June; postings now thro
 BookKeeper::periods()->reopen('2026-06-01');
 
 BookKeeper::close()->closeDay('2026-06-30');     // tasks, scheduled reversals, balance snapshot
-BookKeeper::close()->closeMonth('2026-06-30');   // tasks, depreciation, lock the period
+BookKeeper::close()->closeMonth('2026-06-30');   // tasks, FX revaluation, depreciation, lock the period
 BookKeeper::close()->closeYear(2026);            // close open months, closing entry → retained earnings, open next year
 BookKeeper::close()->reopenYear(2026);
 ```
@@ -327,17 +484,19 @@ Schedule the artisan commands:
 ```php
 Schedule::command('bookkeeper:close-day')->dailyAt('23:55');
 Schedule::command('bookkeeper:close-month')->monthlyOn(1, '01:00');
+Schedule::command('bookkeeper:rates')->dailyAt('06:00');
 ```
 
 | Command | Purpose |
 | --- | --- |
-| `bookkeeper:install --chart= --year=` | Import a chart and open the fiscal year |
+| `bookkeeper:install --chart= --currency= --locale= --year=` | Set the base currency, import a chart, open the fiscal year |
 | `bookkeeper:close-day {date?}` | End of day |
 | `bookkeeper:close-month {date?}` | End of month (default: last month) |
 | `bookkeeper:close-year {year}` | End of year |
 | `bookkeeper:depreciate {date?}` | Post outstanding depreciation |
 | `bookkeeper:snapshot {date?}` | Store daily balance snapshots |
 | `bookkeeper:reversals {date?}` | Post scheduled reversals |
+| `bookkeeper:rates {date?} --currency=*` | Fetch exchange rates from the configured provider |
 
 ---
 
@@ -512,8 +671,9 @@ Publish the file with `php artisan vendor:publish --tag=bookkeeper-config`.
 | --- | --- | --- |
 | `connection` | `null` (default connection) | Database connection for BookKeeper tables (`BOOKKEEPER_DB_CONNECTION`) |
 | `run_migrations` | `true` | Load the package migrations automatically (`BOOKKEEPER_RUN_MIGRATIONS`) |
-| `currency` | `USD` | Base currency (`BOOKKEEPER_CURRENCY`) |
-| `currencies` | `[]` | Minor-unit overrides, e.g. `['UGX' => 0]` |
+| `currency` | `USD` | Default base currency for new books (`BOOKKEEPER_CURRENCY`); locked per set of books on first posting |
+| `currencies` | `[]` | Overrides and custom units: `'KES' => ['decimals' => 2, 'cash_increment' => '1']` |
+| `locale` | `null` (app locale) | Money formatting and chart name language (`BOOKKEEPER_LOCALE`) |
 | `rounding` | `HalfUp` | Rounding for calculated amounts (any `Brick\Math\RoundingMode`) |
 | `fiscal_year.start_month` | `1` | First month of the fiscal year |
 | `fiscal_year.auto_create` | `true` | Create fiscal years and periods on first use |
@@ -527,6 +687,13 @@ Publish the file with `php artisan vendor:publish --tag=bookkeeper-config`.
 | `documents.ageing_buckets` | `[0, 30, 60, 90]` | Ageing report bucket bounds (days overdue) |
 | `tills.over_short_role` | `cash_over_short` | Account role for till overages and shortages |
 | `snapshots.enabled` | `true` | Use daily balance snapshots |
+| `exchange_rates.provider` | `null` | `ExchangeRateProvider` class for `bookkeeper:rates` |
+| `exchange_rates.currencies` | `[]` | Currencies to fetch (empty: those in use) |
+| `exchange_rates.fixed` | `[]` | Rates for `FixedRateProvider` |
+| `revaluation.enabled` | `true` | Revalue foreign monetary balances at month end |
+| `revaluation.role` | `fx_gain_loss` | Account role for unrealised exchange differences |
+| `revaluation.reverse` | `true` | Reverse the revaluation the next day |
+| `documents.cash_rounding` | `false` | Round document totals to the smallest coin |
 | `appropriation` | `[]` | Default year-end appropriation rules |
 | `close.day` / `close.month` / `close.year` | `[]` | `CloseTask` classes run at each close |
 
@@ -544,6 +711,7 @@ Some features post to accounts by role. Both bundled charts assign all of them. 
 | `fx_gain_loss` | Exchange differences on settlement |
 | `withholding_tax` | Withholding without a tax-rate account |
 | `cash_over_short` | Till overages and shortages |
+| `cash_rounding` | Cash rounding on document totals |
 | `cash_on_hand` | Parent of new till accounts |
 | `fixed_assets`, `accumulated_depreciation`, `depreciation_expense`, `asset_disposal` | Fixed assets |
 | `dividends_payable` | Default credit for dividends |
@@ -558,6 +726,7 @@ Some features post to accounts by role. Both bundled charts assign all of them. 
 | `bookkeeper_journal_entries` / `bookkeeper_journal_lines` | The general ledger: entry headers and their debit and credit lines |
 | `bookkeeper_fiscal_years` / `bookkeeper_periods` | Fiscal calendar and period locks |
 | `bookkeeper_sequences` | Gap-free numbering |
+| `bookkeeper_settings` | Settings of these books, including the locked base currency |
 | `bookkeeper_snapshots` / `bookkeeper_account_balances` | Daily cumulative balances |
 | `bookkeeper_close_runs` | Which day, month and year closes have run |
 | `bookkeeper_tax_rates` / `bookkeeper_exchange_rates` | Tax and currency rates |
@@ -585,6 +754,7 @@ Every exception extends `OtimOtim\BookKeeper\Exceptions\BookKeeperException`.
 | `PeriodClosedException` | Posting into a closed (or missing) period |
 | `ImmutableRecordException` | Editing or deleting a posted entry or line |
 | `InvalidAmountException` | An amount has too many decimals or mixes currencies |
+| `InvalidCurrencyException` | An unknown currency code (extends `InvalidAmountException`) |
 | `InvalidOperationException` | A business rule is broken (paying the wrong document, closing twice, voiding a paid invoice, ...) |
 | `TemplateNotFoundException` | A posting template is not defined |
 
@@ -645,6 +815,26 @@ Freeze the clock (`Carbon::setTestNow()`) when you assert on dates or periods.
 
 ---
 
+## Architecture
+
+BookKeeper is organised around SOLID principles so it can be extended without being edited:
+
+- **Single responsibility.** Each service owns one area. For example, `LedgerService` records entries, `LineNormalizer` validates and converts lines, `SettlementService` handles allocations and settlement, `RevaluationService` handles exchange revaluation, and `BalanceService` aggregates balances. `BookKeeperManager`, behind the facade, only delegates.
+- **Open/closed.** Behaviour is extended through configuration and contracts, not by changing the package:
+  - posting templates, chart templates and role overrides;
+  - `CloseTask` for end-of-day, month and year work;
+  - `ExchangeRateProvider` for rate sources.
+- **Liskov substitution / interface segregation.** The contracts are small, with one method each, so any implementation can stand in.
+- **Dependency inversion.** Services receive their collaborators through the container, and are registered as singletons in `BookKeeperServiceProvider::SERVICES`. Bind your own subclass to replace one, for example `$this->app->singleton(TaxService::class, MyTaxService::class)`.
+- **DRY.** Shared rules live in one place:
+  - `AccountReference` parses `role`, `#code` and `:context` references.
+  - `Morph` builds polymorphic columns.
+  - `LineData::converted()` and `LineData::signed()` build foreign-currency and sign-dependent lines.
+  - `Account::balanceIn()` turns aggregated totals into a balance.
+  - Currency data lives only in `Currency`/`Iso4217`.
+
+---
+
 ## Development with Docker
 
 The image is PHP 8.5 CLI with Composer, PCOV and the SQLite, MySQL and PostgreSQL drivers.
@@ -657,6 +847,7 @@ make test-mysql   # MySQL 8.4
 make test-all
 make shell
 PHP_VERSION=8.4 make build test   # another PHP version
+vendor/bin/pint                    # code style (Laravel preset)
 ```
 
 Without Docker, run `composer install` and then `vendor/bin/pest`.

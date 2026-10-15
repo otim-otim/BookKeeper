@@ -2,17 +2,19 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
+use OtimOtim\BookKeeper\Support\Money;
 
 /**
  * @property int $id
  * @property int $bank_statement_id
- * @property \Illuminate\Support\Carbon $date
+ * @property Carbon $date
  * @property ?string $description
  * @property ?string $reference
- * @property \OtimOtim\BookKeeper\Support\Money $amount Positive: money in.
+ * @property Money $amount Positive: money in.
  * @property ?int $journal_line_id
  */
 class BankStatementLine extends Model
@@ -21,7 +23,7 @@ class BankStatementLine extends Model
 
     protected $casts = [
         'date' => DateCast::class,
-        'amount' => MoneyCast::class,
+        'amount' => MoneyCast::class.':statement.currency',
         'matched_at' => 'datetime',
     ];
 

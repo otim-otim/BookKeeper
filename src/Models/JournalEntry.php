@@ -2,11 +2,12 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Enums\EntryStatus;
 use OtimOtim\BookKeeper\Enums\EntryType;
 use OtimOtim\BookKeeper\Exceptions\ImmutableRecordException;
@@ -20,7 +21,7 @@ use OtimOtim\BookKeeper\Support\Money;
  *
  * @property int $id
  * @property ?string $number
- * @property \Illuminate\Support\Carbon $date
+ * @property Carbon $date
  * @property EntryType $type
  * @property EntryStatus $status
  * @property ?string $memo
@@ -30,7 +31,7 @@ use OtimOtim\BookKeeper\Support\Money;
  * @property ?string $idempotency_key
  * @property ?int $reverses_id
  * @property ?int $reversed_by_id
- * @property ?\Illuminate\Support\Carbon $posted_at
+ * @property ?Carbon $posted_at
  */
 class JournalEntry extends Model
 {

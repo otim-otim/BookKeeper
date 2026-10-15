@@ -2,10 +2,11 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Casts\MoneyCast;
 use OtimOtim\BookKeeper\Enums\PaymentDirection;
 use OtimOtim\BookKeeper\Support\Money;
@@ -19,7 +20,7 @@ use OtimOtim\BookKeeper\Support\Money;
  * @property PaymentDirection $direction
  * @property string $number
  * @property int $contact_id
- * @property \Illuminate\Support\Carbon $date
+ * @property Carbon $date
  * @property string $currency
  * @property string $exchange_rate
  * @property Money $amount

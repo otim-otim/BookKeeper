@@ -2,10 +2,11 @@
 
 namespace OtimOtim\BookKeeper\Models;
 
-use OtimOtim\BookKeeper\Casts\DateCast;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Casts\DateCast;
 use OtimOtim\BookKeeper\Enums\TaxType;
 use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Money;
@@ -60,7 +61,7 @@ class TaxRate extends Model
 
     public function scopeEffectiveOn(Builder $query, \DateTimeInterface|string $date): Builder
     {
-        $date = \Illuminate\Support\Carbon::parse($date)->toDateString();
+        $date = Carbon::parse($date)->toDateString();
 
         return $query
             ->where('is_active', true)

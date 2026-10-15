@@ -4,35 +4,28 @@ namespace OtimOtim\BookKeeper\Services;
 
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Carbon;
+use OtimOtim\BookKeeper\Data\DocumentData;
+use OtimOtim\BookKeeper\Data\DocumentLineData;
+use OtimOtim\BookKeeper\Data\LineData;
 use OtimOtim\BookKeeper\Enums\DocumentStatus;
 use OtimOtim\BookKeeper\Enums\DocumentType;
 use OtimOtim\BookKeeper\Enums\Side;
 use OtimOtim\BookKeeper\Events\DocumentIssued;
 use OtimOtim\BookKeeper\Events\DocumentVoided;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
-use OtimOtim\BookKeeper\Models\Account;
 use OtimOtim\BookKeeper\Models\Allocation;
 use OtimOtim\BookKeeper\Models\Contact;
 use OtimOtim\BookKeeper\Models\Document;
-use OtimOtim\BookKeeper\Models\JournalEntry;
 use OtimOtim\BookKeeper\Support\Currency;
 use OtimOtim\BookKeeper\Support\Database;
 use OtimOtim\BookKeeper\Support\Money;
+use OtimOtim\BookKeeper\Support\Morph;
 
 /**
  * Sales invoices and credit notes, supplier bills and debit notes.
  *
- * A document line is an array with:
- *  - account: revenue account (sales) or expense/asset account (purchases)
- *  - description
- *  - quantity (default 1) and unit_price, or amount
- *  - discount: amount off the line
- *  - tax: TaxRate, ID or code
- *
- * Options: issue_date, due_date, currency, exchange_rate, tax_inclusive,
- * number, reference, notes, branch_id, source (model), metadata, draft
- * (save without issuing), idempotency_key.
+ * Documents are described by DocumentData (or the equivalent arrays).
+ * Settling them with payments and credits is SettlementService's job.
  */
 class DocumentService
 {
@@ -43,6 +36,7 @@ class DocumentService
         protected TaxService $taxes,
         protected ExchangeRateService $rates,
         protected SequenceService $sequences,
+        protected SettlementService $settlements,
     ) {}
 
     public function invoice(Contact|Model|int $contact, array $lines, array $options = []): Document
@@ -66,50 +60,51 @@ class DocumentService
     }
 
     /**
-     * Create a document and issue it (unless $options['draft'] is true).
+     * Create a document from its parts (see DocumentData::fromArray).
      */
     public function create(DocumentType|string $type, Contact|Model|int $contact, array $lines, array $options = []): Document
     {
-        $type = $type instanceof DocumentType ? $type : DocumentType::from($type);
-        $contact = $this->contacts->resolve($contact);
+        return $this->createFrom(DocumentData::fromArray(['type' => $type, 'contact' => $contact, 'lines' => $lines] + $options));
+    }
 
-        if ($lines === []) {
-            throw new InvalidOperationException('A document needs at least one line.');
-        }
+    /**
+     * Create a document and issue it, unless it is a draft.
+     */
+    public function createFrom(DocumentData $data): Document
+    {
+        $contact = $this->contacts->resolve($data->contact);
 
-        return Database::transaction(function () use ($type, $contact, $lines, $options) {
-            $issueDate = Carbon::parse($options['issue_date'] ?? now())->startOfDay();
-            $currency = strtoupper($options['currency'] ?? $contact->currency ?? Currency::base());
-            $terms = $options['payment_terms_days'] ?? $contact->payment_terms_days ?? config('bookkeeper.documents.default_payment_terms_days', 30);
+        return Database::transaction(function () use ($data, $contact) {
+            $issueDate = ($data->issueDate ?? now())->copy()->startOfDay();
+            $currency = Currency::assertValid($data->currency ?? $contact->currency ?? Currency::base());
+            $terms = $data->paymentTermsDays ?? $contact->payment_terms_days ?? config('bookkeeper.documents.default_payment_terms_days', 30);
 
             $document = Document::create([
-                'type' => $type,
-                'number' => $options['number'] ?? null,
+                'type' => $data->type,
+                'number' => $data->number,
                 'contact_id' => $contact->id,
                 'issue_date' => $issueDate,
-                'due_date' => Carbon::parse($options['due_date'] ?? $issueDate->copy()->addDays((int) $terms)),
+                'due_date' => $data->dueDate ?? $issueDate->copy()->addDays((int) $terms),
                 'currency' => $currency,
-                'exchange_rate' => (string) ($options['exchange_rate'] ?? $this->rates->rate($currency, $issueDate)),
-                'tax_inclusive' => (bool) ($options['tax_inclusive'] ?? false),
+                'exchange_rate' => $data->exchangeRate ?? $this->rates->rate($currency, $issueDate),
+                'tax_inclusive' => $data->taxInclusive,
                 'status' => DocumentStatus::Draft,
-                'reference' => $options['reference'] ?? null,
-                'notes' => $options['notes'] ?? null,
-                'branch_id' => $options['branch_id'] ?? null,
-                'source_type' => isset($options['source']) ? $options['source']->getMorphClass() : null,
-                'source_id' => isset($options['source']) ? $options['source']->getKey() : null,
-                'metadata' => $options['metadata'] ?? null,
-            ]);
+                'reference' => $data->reference,
+                'notes' => $data->notes,
+                'branch_id' => $data->branchId,
+                'metadata' => $data->metadata,
+            ] + Morph::attributes($data->source, 'source'));
 
-            $this->writeLines($document, $lines);
+            $this->writeLines($document, $data->lines, $data->cashRounding);
 
-            return ($options['draft'] ?? false)
+            return $data->draft
                 ? $document->load('lines')
-                : $this->issue($document, $options);
+                : $this->issue($document, ['idempotency_key' => $data->idempotencyKey]);
         });
     }
 
     /**
-     * Replace a draft's lines.
+     * Replace a draft's lines (and optionally some header fields).
      */
     public function updateDraft(Document $document, array $lines, array $attributes = []): Document
     {
@@ -120,7 +115,7 @@ class DocumentService
         return Database::transaction(function () use ($document, $lines, $attributes) {
             $document->fill(array_intersect_key($attributes, array_flip(['issue_date', 'due_date', 'reference', 'notes', 'tax_inclusive', 'metadata'])))->save();
             $document->lines()->delete();
-            $this->writeLines($document, $lines);
+            $this->writeLines($document, DocumentLineData::collect($lines), $attributes['cash_rounding'] ?? null);
 
             return $document->load('lines');
         });
@@ -131,7 +126,8 @@ class DocumentService
      *
      * Invoice: Dr receivable (total), Cr revenue (net), Cr output tax.
      * Bill:    Dr expense (net, plus non-recoverable tax), Dr input tax, Cr payable (total).
-     * Credit and debit notes post the mirror image.
+     * Credit and debit notes post the mirror image. Cash rounding goes to
+     * the "cash_rounding" role.
      */
     public function issue(Document $document, array $options = []): Document
     {
@@ -141,58 +137,12 @@ class DocumentService
 
         return Database::transaction(function () use ($document, $options) {
             $document->loadMissing(['lines.taxRate', 'contact']);
-            $type = $document->type;
-            $rate = (string) $document->exchange_rate;
-            $foreign = $document->currency !== Currency::base();
+            $number = $document->number ?? $this->nextNumber($document);
+            [$lines, $baseTotal] = $this->journalLines($document);
 
-            $number = $document->number ?? $this->sequences->next(
-                'document:'.$type->value,
-                config("bookkeeper.documents.number_formats.{$type->value}", strtoupper($type->value).'-{Y}-{seq}'),
-                $document->issue_date,
-            );
-
-            // The control account carries the contact's balance: debit for
-            // invoices, credit for bills, and the reverse for credit and debit notes.
-            $controlSide = ($type->isSales() xor $type->isCredit()) ? Side::Debit : Side::Credit;
-            $itemSide = $controlSide->opposite();
-            $sign = $type->isCredit() ? -1 : 1;
-
-            $journal = [];
-            $baseTotal = Money::zero();
-
-            foreach ($document->lines as $line) {
-                $net = $line->net_amount;
-                $tax = $line->tax_amount;
-                $taxRate = $line->taxRate;
-
-                // Non-recoverable purchase tax is part of the cost.
-                if ($taxRate && $type->isPurchase() && ! $taxRate->isRecoverable()) {
-                    $net = $net->plus($tax);
-                    $tax = Money::zero($document->currency);
-                }
-
-                $netBase = $net->convertTo(Currency::base(), $rate);
-                $journal[] = $this->line($line->account_id, $itemSide, $net, $netBase, $foreign, $rate, $line->description);
-                $baseTotal = $baseTotal->plus($netBase);
-
-                if (! $tax->isZero()) {
-                    $taxBase = $tax->convertTo(Currency::base(), $rate);
-                    $journal[] = $this->line($taxRate->account_id, $itemSide, $tax, $taxBase, $foreign, $rate, $taxRate->name) + [
-                        'tax_rate' => $taxRate->id,
-                        'taxable_amount' => Money::ofMinor($sign * $netBase->minor()),
-                    ];
-                    $baseTotal = $baseTotal->plus($taxBase);
-                }
-            }
-
-            $control = $this->accounts->findByRole($type->controlRole());
-            $journal[] = $this->line($control, $controlSide, $document->total, $baseTotal, $foreign, $rate, null) + [
-                'subledger' => $document->contact,
-            ];
-
-            $entry = $this->ledger->record($journal, [
+            $entry = $this->ledger->record($lines, [
                 'date' => $document->issue_date,
-                'memo' => ucfirst(str_replace('_', ' ', $type->value)).' '.$number.' - '.$document->contact->name,
+                'memo' => ucfirst(str_replace('_', ' ', $document->type->value)).' '.$number.' - '.$document->contact->name,
                 'reference' => $number,
                 'branch_id' => $document->branch_id,
                 'source' => $document,
@@ -247,222 +197,142 @@ class DocumentService
         });
     }
 
-    /**
-     * Apply a credit note to an invoice (or a debit note to a bill).
-     */
+    // -----------------------------------------------------------------------
+    // Settlement (delegated; kept here for a convenient API)
+    // -----------------------------------------------------------------------
+
     public function applyCredit(Document $credit, Document $target, Money|int|float|string|null $amount = null, array $options = []): Allocation
     {
-        if ($credit->type->appliesTo() !== $target->type) {
-            throw new InvalidOperationException("A {$credit->type->value} cannot be applied to a {$target->type->value}.");
-        }
-        if ($credit->contact_id !== $target->contact_id) {
-            throw new InvalidOperationException('Credit and target documents belong to different contacts.');
-        }
-        if ($credit->currency !== $target->currency) {
-            throw new InvalidOperationException('Credit and target documents are in different currencies.');
-        }
-        if (! $credit->status->isOutstanding() || ! $target->status->isOutstanding()) {
-            throw new InvalidOperationException('Both documents must be issued and not fully settled.');
-        }
-
-        $amount = $amount === null
-            ? $credit->amountDue()->min($target->amountDue())
-            : Money::of($amount, $target->currency);
-
-        if (! $amount->isPositive() || $amount->isGreaterThan($credit->amountDue()) || $amount->isGreaterThan($target->amountDue())) {
-            throw new InvalidOperationException('The amount must be positive and no more than either document has outstanding.');
-        }
-
-        return Database::transaction(function () use ($credit, $target, $amount, $options) {
-            $date = Carbon::parse($options['date'] ?? now());
-            $relief = $this->baseRelief($target, $amount);
-            $consumed = $this->baseRelief($credit, $amount);
-
-            // Rates differ between the two documents: settle the base difference.
-            $fx = $this->fxAdjustment(
-                $this->accounts->findByRole($target->type->controlRole()),
-                $target->contact,
-                ($target->type->isSales() ? Side::Credit : Side::Debit),
-                $relief->minus($consumed),
-                $date,
-                $target,
-            );
-
-            $allocation = Allocation::create([
-                'document_id' => $target->id,
-                'credit_document_id' => $credit->id,
-                'date' => $date,
-                'amount' => $amount->minor(),
-                'base_amount' => $relief->minor(),
-                'credit_base_amount' => $consumed->minor(),
-                'journal_entry_id' => $fx?->id,
-            ]);
-
-            $this->refreshStatus($target);
-            $this->refreshStatus($credit);
-
-            return $allocation;
-        });
+        return $this->settlements->applyCredit($credit, $target, $amount, $options);
     }
 
-    /**
-     * Remove an allocation (payment or credit application) from a document,
-     * reversing any FX adjustment it posted.
-     */
     public function unapply(Allocation $allocation): void
     {
-        Database::transaction(function () use ($allocation) {
-            if ($allocation->journalEntry && ! $allocation->journalEntry->isReversed()) {
-                $this->ledger->reverse($allocation->journalEntry, ['memo' => 'Unapply allocation #'.$allocation->id]);
-            }
-
-            if ($allocation->payment_id && ! $allocation->journal_entry_id) {
-                // Allocated when the payment was recorded, so the payment entry
-                // relieved the control account at the document's value. The payment
-                // now stays on account at its own rate: move the difference back.
-                $payment = $allocation->payment;
-                $atPaymentRate = Money::ofMinor($allocation->amount, $payment->currency)->convertTo(Currency::base(), (string) $payment->exchange_rate);
-                $delta = $atPaymentRate->minus(Money::ofMinor($allocation->base_amount));
-                $this->fxAdjustment(
-                    $payment->controlAccount,
-                    $payment->contact,
-                    $payment->direction->value === 'received' ? Side::Credit : Side::Debit,
-                    $delta,
-                    now(),
-                    $payment,
-                );
-            }
-
-            $documents = array_filter([$allocation->document, $allocation->creditDocument]);
-            $allocation->delete();
-
-            foreach ($documents as $document) {
-                $this->refreshStatus($document);
-            }
-        });
+        $this->settlements->unapply($allocation);
     }
 
-    /**
-     * Recompute paid_total and status from allocations.
-     */
     public function refreshStatus(Document $document): Document
     {
-        if ($document->status === DocumentStatus::Void || $document->status === DocumentStatus::Draft) {
-            return $document;
+        return $this->settlements->refreshStatus($document);
+    }
+
+    // -----------------------------------------------------------------------
+    // Internals
+    // -----------------------------------------------------------------------
+
+    /**
+     * The journal lines for a document and the base-currency total they put
+     * on the control account.
+     *
+     * @return array{0: list<LineData>, 1: Money}
+     */
+    protected function journalLines(Document $document): array
+    {
+        $type = $document->type;
+        $rate = (string) $document->exchange_rate;
+
+        // The control account carries the contact's balance: debit for
+        // invoices, credit for bills, and the reverse for credit and debit notes.
+        $controlSide = ($type->isSales() xor $type->isCredit()) ? Side::Debit : Side::Credit;
+        $itemSide = $controlSide->opposite();
+        $sign = $type->isCredit() ? -1 : 1;
+
+        $lines = [];
+        $baseTotal = Money::zero();
+
+        foreach ($document->lines as $line) {
+            [$net, $tax] = [$line->net_amount, $line->tax_amount];
+            $taxRate = $line->taxRate;
+
+            // Non-recoverable purchase tax is part of the cost.
+            if ($taxRate && $type->isPurchase() && ! $taxRate->isRecoverable()) {
+                [$net, $tax] = [$net->plus($tax), Money::zero($document->currency)];
+            }
+
+            $netBase = $net->convertTo(Currency::base(), $rate);
+            $lines[] = LineData::converted($line->account_id, $itemSide, $net, $netBase, $rate, $line->description);
+            $baseTotal = $baseTotal->plus($netBase);
+
+            if (! $tax->isZero()) {
+                $taxBase = $tax->convertTo(Currency::base(), $rate);
+                $lines[] = LineData::converted($taxRate->account_id, $itemSide, $tax, $taxBase, $rate, $taxRate->name,
+                    taxRate: $taxRate->id,
+                    taxableAmount: Money::ofMinor($sign * $netBase->minor()),
+                );
+                $baseTotal = $baseTotal->plus($taxBase);
+            }
         }
 
-        $applied = (int) Allocation::query()->where('document_id', $document->id)->sum('amount')
-            + (int) Allocation::query()->where('credit_document_id', $document->id)->sum('amount');
+        if (! $document->rounding->isZero()) {
+            $roundingBase = $document->rounding->abs()->convertTo(Currency::base(), $rate);
+            $lines[] = LineData::converted(
+                '@cash_rounding',
+                $document->rounding->isPositive() ? $itemSide : $controlSide,
+                $document->rounding->abs(),
+                $roundingBase,
+                $rate,
+                'Cash rounding',
+            );
+            $baseTotal = $document->rounding->isPositive() ? $baseTotal->plus($roundingBase) : $baseTotal->minus($roundingBase);
+        }
 
-        $total = $document->total->minor();
+        $control = $this->accounts->findByRole($type->controlRole());
+        $lines[] = LineData::converted($control, $controlSide, $document->total, $baseTotal, $rate, subledger: $document->contact);
 
-        $document->update([
-            'paid_total' => $applied,
-            'status' => match (true) {
-                $applied >= $total => DocumentStatus::Paid,
-                $applied > 0 => DocumentStatus::Partial,
-                default => DocumentStatus::Open,
-            },
-        ]);
-
-        return $document;
+        return [$lines, $baseTotal];
     }
 
     /**
-     * Base-currency value to relieve from the control account when $amount
-     * of a document is settled. The final settlement takes whatever is left
-     * so the document clears to exactly zero in base currency.
+     * @param  list<DocumentLineData>  $lines
      */
-    public function baseRelief(Document $document, Money $amount): Money
-    {
-        if ($amount->equals($document->amountDue())) {
-            $relieved = (int) Allocation::query()->where('document_id', $document->id)->sum('base_amount')
-                + (int) Allocation::query()->where('credit_document_id', $document->id)->sum('credit_base_amount');
-
-            return Money::ofMinor($document->base_total->minor() - $relieved);
-        }
-
-        return $amount->convertTo(Currency::base(), (string) $document->exchange_rate);
-    }
-
-    /**
-     * Post a base-currency adjustment between a control account (for one
-     * contact) and the "fx_gain_loss" role. $delta is the extra amount to
-     * post on $controlSide of the control account; negative goes the other way.
-     */
-    public function fxAdjustment(Account $control, Contact $contact, Side $controlSide, Money $delta, \DateTimeInterface|string $date, ?Model $source = null): ?JournalEntry
-    {
-        if ($delta->isZero()) {
-            return null;
-        }
-
-        $side = $delta->isPositive() ? $controlSide : $controlSide->opposite();
-
-        return $this->ledger->record([
-            ['account' => $control, $side->value => $delta->abs(), 'subledger' => $contact],
-            ['account' => '@fx_gain_loss', $side->opposite()->value => $delta->abs()],
-        ], [
-            'date' => $date,
-            'memo' => 'Exchange difference on settlement',
-            'source' => $source,
-        ]);
-    }
-
-    protected function writeLines(Document $document, array $lines): void
+    protected function writeLines(Document $document, array $lines, ?bool $cashRounding): void
     {
         $subtotal = Money::zero($document->currency);
         $taxTotal = Money::zero($document->currency);
 
-        foreach (array_values($lines) as $position => $input) {
-            $line = $this->computeLine($document, $input);
-            $document->lines()->create($line + ['position' => $position]);
-            $subtotal = $subtotal->plus(Money::ofMinor($line['net_amount'], $document->currency));
-            $taxTotal = $taxTotal->plus(Money::ofMinor($line['tax_amount'], $document->currency));
+        foreach ($lines as $position => $line) {
+            $row = $this->computeLine($document, $line);
+            $document->lines()->create($row + ['position' => $position]);
+            $subtotal = $subtotal->plus(Money::ofMinor($row['net_amount'], $document->currency));
+            $taxTotal = $taxTotal->plus(Money::ofMinor($row['tax_amount'], $document->currency));
         }
+
+        $total = $subtotal->plus($taxTotal);
+        $rounded = ($cashRounding ?? config('bookkeeper.documents.cash_rounding', false)) ? $total->roundToCash() : $total;
 
         $document->update([
             'subtotal' => $subtotal,
             'tax_total' => $taxTotal,
-            'total' => $subtotal->plus($taxTotal),
+            'rounding' => $rounded->minus($total),
+            'total' => $rounded,
         ]);
     }
 
-    protected function computeLine(Document $document, array $input): array
+    protected function computeLine(Document $document, DocumentLineData $input): array
     {
         $currency = $document->currency;
-        $account = $this->accounts->resolve($input['account'] ?? throw new InvalidOperationException('Every document line needs an account.'));
+        $account = $this->accounts->resolve($input->account);
 
         if ($account->is_group || ! $account->is_active) {
             throw new InvalidOperationException("Account [{$account->code}] cannot be used on a document line.");
         }
 
-        $quantity = BigDecimal::of((string) ($input['quantity'] ?? '1'));
+        $unitPrice = Money::of($input->unitPrice instanceof Money ? $input->unitPrice->amount() : $input->unitPrice, $currency);
+        $discount = Money::of($input->discount instanceof Money ? $input->discount->amount() : $input->discount, $currency);
+        $gross = $unitPrice->multipliedBy(BigDecimal::of($input->quantity))->minus($discount);
 
-        if (isset($input['amount'])) {
-            $unitPrice = Money::of($input['amount'], $currency);
-            $quantity = BigDecimal::one();
-        } else {
-            $unitPrice = Money::of($input['unit_price'] ?? throw new InvalidOperationException('A document line needs unit_price or amount.'), $currency);
-        }
-
-        $discount = Money::of($input['discount'] ?? 0, $currency);
-        $gross = $unitPrice->multipliedBy($quantity)->minus($discount);
-
-        $taxRate = isset($input['tax']) ? $this->taxes->resolve($input['tax'], $document->issue_date) : null;
+        $taxRate = $input->tax !== null ? $this->taxes->resolve($input->tax, $document->issue_date) : null;
 
         if ($taxRate && $taxRate->type !== $document->type->taxType()) {
             throw new InvalidOperationException("Tax rate [{$taxRate->code}] is a {$taxRate->type->value} rate and cannot be used on a {$document->type->value}.");
         }
 
-        if ($taxRate === null) {
-            [$net, $tax] = [$gross, Money::zero($currency)];
-        } elseif ($document->tax_inclusive) {
-            $tax = $taxRate->taxIn($gross);
-            $net = $gross->minus($tax);
-        } else {
-            $net = $gross;
-            $tax = $taxRate->taxOn($net);
-        }
+        $tax = match (true) {
+            $taxRate === null => Money::zero($currency),
+            $document->tax_inclusive => $taxRate->taxIn($gross),
+            default => $taxRate->taxOn($gross),
+        };
+        $net = $document->tax_inclusive ? $gross->minus($tax) : $gross;
 
         if ($net->isNegative()) {
             throw new InvalidOperationException('A document line cannot have a negative amount.');
@@ -470,8 +340,8 @@ class DocumentService
 
         return [
             'account_id' => $account->id,
-            'description' => $input['description'] ?? null,
-            'quantity' => (string) $quantity,
+            'description' => $input->description,
+            'quantity' => $input->quantity,
             'unit_price' => $unitPrice->minor(),
             'discount' => $discount->minor(),
             'tax_rate_id' => $taxRate?->id,
@@ -481,18 +351,14 @@ class DocumentService
         ];
     }
 
-    /**
-     * A ledger line for an amount in the document currency with a fixed
-     * base-currency value.
-     */
-    protected function line(Account|int $account, Side $side, Money $amount, Money $base, bool $foreign, string $rate, ?string $memo): array
+    protected function nextNumber(Document $document): string
     {
-        $line = ['account' => $account, $side->value => $foreign ? $amount : $base, 'memo' => $memo];
+        $type = $document->type->value;
 
-        if ($foreign) {
-            $line += ['currency' => $amount->currency(), 'exchange_rate' => $rate, 'base_amount' => $base];
-        }
-
-        return $line;
+        return $this->sequences->next(
+            "document:{$type}",
+            config("bookkeeper.documents.number_formats.{$type}", strtoupper($type).'-{Y}-{seq}'),
+            $document->issue_date,
+        );
     }
 }

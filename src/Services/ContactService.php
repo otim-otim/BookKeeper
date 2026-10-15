@@ -3,8 +3,10 @@
 namespace OtimOtim\BookKeeper\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use OtimOtim\BookKeeper\Data\ContactData;
 use OtimOtim\BookKeeper\Exceptions\InvalidOperationException;
 use OtimOtim\BookKeeper\Models\Contact;
+use OtimOtim\BookKeeper\Support\Morph;
 
 /**
  * Customers and vendors.
@@ -18,22 +20,23 @@ class ContactService
      */
     public function create(string $name, array $options = []): Contact
     {
-        $contactable = $options['contactable'] ?? null;
+        return $this->createFrom(ContactData::fromArray(['name' => $name] + $options));
+    }
 
+    public function createFrom(ContactData $data): Contact
+    {
         return Contact::create([
-            'name' => $name,
-            'is_customer' => $options['customer'] ?? ! ($options['vendor'] ?? false),
-            'is_vendor' => $options['vendor'] ?? false,
-            'email' => $options['email'] ?? null,
-            'phone' => $options['phone'] ?? null,
-            'tax_number' => $options['tax_number'] ?? null,
-            'address' => $options['address'] ?? null,
-            'currency' => isset($options['currency']) ? strtoupper($options['currency']) : null,
-            'payment_terms_days' => $options['payment_terms_days'] ?? null,
-            'contactable_type' => $contactable?->getMorphClass(),
-            'contactable_id' => $contactable?->getKey(),
-            'metadata' => $options['metadata'] ?? null,
-        ]);
+            'name' => $data->name,
+            'is_customer' => $data->isCustomer,
+            'is_vendor' => $data->isVendor,
+            'email' => $data->email,
+            'phone' => $data->phone,
+            'tax_number' => $data->taxNumber,
+            'address' => $data->address,
+            'currency' => $data->currency,
+            'payment_terms_days' => $data->paymentTermsDays,
+            'metadata' => $data->metadata,
+        ] + Morph::attributes($data->contactable, 'contactable'));
     }
 
     public function customer(string $name, array $options = []): Contact
@@ -51,10 +54,7 @@ class ContactService
      */
     public function for(Model $model, array $options = []): Contact
     {
-        $contact = Contact::query()
-            ->where('contactable_type', $model->getMorphClass())
-            ->where('contactable_id', $model->getKey())
-            ->first();
+        $contact = Contact::query()->where(Morph::attributes($model, 'contactable'))->first();
 
         return $contact ?? $this->create(
             $options['name'] ?? (string) ($model->getAttribute('name') ?? class_basename($model).' #'.$model->getKey()),
